@@ -1,0 +1,15 @@
+# Build output
+build/
+build-*/
+out/
+cmake-build-*/
+
+# Tooling
+compile_commands.json
+.cache/
+.vscode/
+.idea/
+
+# Runtime artefacts produced by the workstation itself
+*.ppm
+projects/
