@@ -44,9 +44,17 @@ four-lane colour layout the 320×240 panel allows.
 > accepted trade for getting the encoder and a screen working together on the
 > bench today.
 
+### Confirmed board
+
+The prototype's module is silkscreened **`0.96"OLED4SPI Ver:1.2`**, pins in the
+order `GND VCC SCK SDA RES DC CS`. That is a 128×64 **SSD1306** — the defaults
+(`AW_OLED_CHIP=ssd1306`, 128×64) are correct for it, so no chip flag is needed;
+only orientation (`AW_OLED_ROTATE`) might, depending on how it is mounted.
+
 ### Wiring
 
-Chosen to sit clear of the encoder (GPIO 17/27/22), using hardware SPI0:
+Chosen to sit clear of the encoder (GPIO 17/27/22), using hardware SPI0. The pin
+order below matches this module's labels left-to-right:
 
 | OLED pin | Pi pin | BCM | Note |
 | --- | --- | --- | --- |
