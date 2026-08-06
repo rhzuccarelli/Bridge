@@ -6,6 +6,8 @@
 
 #include "aw/core/Logger.hpp"
 #include "aw/platform/CompositeButtons.hpp"
+#include "aw/platform/CompositeEncoder.hpp"
+#include "aw/platform/NullAudioOutput.hpp"
 #include "aw/platform/desktop/DevBackends.hpp"
 #include "aw/platform/posix/PosixStorage.hpp"
 #include "aw/platform/rpi/AlsaAudioOutput.hpp"
@@ -41,26 +43,39 @@ core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
     hal::Platform platform;
     platform.clock = std::make_unique<SteadyClock>();
     platform.storage = std::make_unique<posix::PosixStorage>(effective.projectsRoot);
-    platform.audioOutput = std::make_unique<AlsaAudioOutput>(effective.alsaDevice);
     platform.audioInput = nullptr;  // Phase 4+: capture for punch-in.
     platform.usb = std::make_unique<LibUsbHost>();
     platform.mtp = std::make_unique<LibMtpDevice>();
 
-    // Display and input: the prototype drives an HDMI panel through the Linux
-    // framebuffer and takes its non-encoder buttons from the touch strip, so it
-    // uses the same development backends as the simulator assembly.  The real
-    // encoder is GPIO and is merged in alongside them.
+    // Audio: the ALSA driver is a Phase 5 stub, and the app treats a dead audio
+    // device as fatal (rightly - the product is pointless without sound). So
+    // until ALSA is real, the Pi uses the same silent wall-clock output as the
+    // simulator: playback timing, meters and the transport all work, there is
+    // just no sound. Phase 5 swaps in AlsaAudioOutput and keeps this as the
+    // fallback for when no playback device is present.
+    platform.audioOutput = std::make_unique<NullAudioOutput>();
+    const bool audioIsPlaceholder = true;  // Flip when AlsaAudioOutput lands.
+
+    // Display and input come from the shared development backends (OLED or HDMI
+    // panel, plus keyboard). The real GPIO encoder and button lines are merged
+    // in alongside them, so nothing is lost when a GPIO driver is still a stub.
     desktop::DevBackends backends = desktop::createDevBackends(desktop::optionsFromEnvironment());
     platform.display = std::move(backends.display);
 
     auto buttons = std::make_unique<CompositeButtons>();
     buttons->addSource(std::make_unique<GpioButtons>(effective.pins));
-    buttons->addSource(std::move(backends.buttons));
+    buttons->addSource(std::move(backends.buttons));  // keyboard (+ touch on HDMI)
     platform.buttons = std::move(buttons);
 
-    // The KY-040 is the real control; the keyboard encoder stays available as a
-    // fallback only when there is no GPIO encoder to be had.
-    platform.encoder = std::make_unique<GpioEncoder>(effective.pins);
+    // The KY-040 is the real control, but its Phase 6 driver is a stub; compose
+    // it with the keyboard encoder so the arrow keys drive navigation over SSH
+    // until the GPIO decoder exists. When both work, their motion simply sums.
+    auto encoder = std::make_unique<CompositeEncoder>();
+    encoder->addSource(std::make_unique<GpioEncoder>(effective.pins));
+    if (backends.encoder) {
+        encoder->addSource(std::move(backends.encoder));
+    }
+    platform.encoder = std::move(encoder);
 
     if (!platform.isComplete()) {
         return core::makeError(core::ErrorCode::Unknown, "rpi platform incomplete");
@@ -68,6 +83,10 @@ core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
 
     core::log::info(kModule, "Raspberry Pi platform ready: " + backends.description +
                                  " + GPIO (" + effective.pins.chipName + ")");
+    if (audioIsPlaceholder) {
+        core::log::warning(kModule,
+                           "audio is a silent placeholder until Phase 5 (ALSA) - no sound yet");
+    }
     return platform;
 }
 

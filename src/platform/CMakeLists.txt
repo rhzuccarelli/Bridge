@@ -29,6 +29,8 @@ find_package(Threads REQUIRED)
 ##
 add_library(aw_platform_dev STATIC
     CompositeButtons.cpp
+    CompositeEncoder.cpp
+    NullAudioOutput.cpp
     desktop/DevBackends.cpp
     desktop/KeyboardInput.cpp
     desktop/TerminalDisplay.cpp

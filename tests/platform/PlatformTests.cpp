@@ -11,6 +11,7 @@
 /// touchscreen and no terminal.
 ///
 #include "aw/platform/CompositeButtons.hpp"
+#include "aw/platform/CompositeEncoder.hpp"
 #include "aw/platform/desktop/KeyboardInput.hpp"
 #include "aw/platform/desktop/VirtualPanel.hpp"
 #include "framework/Test.hpp"
@@ -254,4 +255,112 @@ AW_TEST(CompositeButtons, WithNoSourcesFailsRatherThanPretending) {
     CompositeButtons composite;
     AW_CHECK_EQ(composite.sourceCount(), std::size_t{0});
     AW_CHECK(!composite.start().hasValue());
+}
+
+// --- Composite encoder ------------------------------------------------------
+
+namespace {
+
+class FakeEncoder final : public hal::EncoderInterface {
+public:
+    explicit FakeEncoder(bool startSucceeds) : startSucceeds_{startSucceeds} {}
+
+    void setListener(hal::EncoderListener* listener) noexcept override { listener_ = listener; }
+
+    core::Status start() override {
+        if (!startSucceeds_) {
+            return core::makeError(core::ErrorCode::NotImplemented, "fake");
+        }
+        started = true;
+        return core::success();
+    }
+    void stop() noexcept override { started = false; }
+
+    std::int32_t consumeDelta() noexcept override {
+        const std::int32_t d = pending_;
+        pending_ = 0;
+        return d;
+    }
+
+    void turn(std::int32_t delta) {
+        pending_ += delta;
+        if (listener_ != nullptr) {
+            listener_->onEncoderTurned(delta, 0);
+        }
+    }
+
+    bool started{false};
+
+private:
+    bool startSucceeds_;
+    hal::EncoderListener* listener_{nullptr};
+    std::int32_t pending_{0};
+};
+
+class RecordingEncoderListener final : public hal::EncoderListener {
+public:
+    void onEncoderTurned(std::int32_t delta, std::uint64_t) noexcept override { total += delta; }
+    std::int32_t total{0};
+};
+
+}  // namespace
+
+AW_TEST(CompositeEncoder, SumsMotionFromEverySource) {
+    auto gpio = std::make_unique<FakeEncoder>(true);
+    auto keys = std::make_unique<FakeEncoder>(true);
+    FakeEncoder* gpioPtr = gpio.get();
+    FakeEncoder* keysPtr = keys.get();
+
+    CompositeEncoder composite;
+    composite.addSource(std::move(gpio));
+    composite.addSource(std::move(keys));
+    AW_REQUIRE(static_cast<bool>(composite.start()));
+    AW_CHECK_EQ(composite.startedCount(), std::size_t{2});
+
+    gpioPtr->turn(3);
+    keysPtr->turn(-1);
+    AW_CHECK_EQ(composite.consumeDelta(), std::int32_t{2});
+    AW_CHECK_EQ(composite.consumeDelta(), std::int32_t{0});  // Drained.
+}
+
+AW_TEST(CompositeEncoder, ForwardsTheListenerToEverySource) {
+    auto gpio = std::make_unique<FakeEncoder>(true);
+    auto keys = std::make_unique<FakeEncoder>(true);
+    FakeEncoder* gpioPtr = gpio.get();
+    FakeEncoder* keysPtr = keys.get();
+
+    CompositeEncoder composite;
+    composite.addSource(std::move(gpio));
+    composite.addSource(std::move(keys));
+
+    RecordingEncoderListener listener;
+    composite.setListener(&listener);
+    AW_REQUIRE(static_cast<bool>(composite.start()));
+
+    gpioPtr->turn(2);
+    keysPtr->turn(2);
+    AW_CHECK_EQ(listener.total, std::int32_t{4});
+}
+
+AW_TEST(CompositeEncoder, SurvivesAStubSourceThatCannotStart) {
+    // The real prototype: the GPIO encoder is a Phase 6 stub, the keyboard works.
+    auto gpioStub = std::make_unique<FakeEncoder>(false);
+    auto keyboard = std::make_unique<FakeEncoder>(true);
+    FakeEncoder* keyboardPtr = keyboard.get();
+
+    CompositeEncoder composite;
+    composite.addSource(std::move(gpioStub));
+    composite.addSource(std::move(keyboard));
+
+    AW_REQUIRE(static_cast<bool>(composite.start()));
+    AW_CHECK_EQ(composite.startedCount(), std::size_t{1});
+    AW_CHECK(keyboardPtr->started);
+}
+
+AW_TEST(CompositeEncoder, FailsOnlyWhenNoSourceStarts) {
+    CompositeEncoder composite;
+    composite.addSource(std::make_unique<FakeEncoder>(false));
+    const auto status = composite.start();
+    AW_REQUIRE(!status.hasValue());
+    AW_CHECK_EQ(status.error().code(), core::ErrorCode::DeviceNotConnected);
 }
