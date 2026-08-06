@@ -1,0 +1,257 @@
+///
+/// Tests for the development platform backends.
+///
+/// A **separate executable** from `aw_tests`, deliberately.  The portable suite
+/// links no platform code at all, and that property is the architectural claim
+/// this project makes; folding these tests into it would quietly destroy the
+/// only mechanical check of it.  So hardware-adjacent logic gets its own target.
+///
+/// Everything tested here is the pure-logic half of a backend - key mapping,
+/// panel geometry, source merging - chosen so it runs with no framebuffer, no
+/// touchscreen and no terminal.
+///
+#include "aw/platform/CompositeButtons.hpp"
+#include "aw/platform/desktop/KeyboardInput.hpp"
+#include "aw/platform/desktop/VirtualPanel.hpp"
+#include "framework/Test.hpp"
+
+#include <vector>
+
+using namespace aw;
+using namespace aw::platform;
+
+// --- Keyboard mapping -------------------------------------------------------
+
+AW_TEST(KeyMap, MapsTransportKeys) {
+    AW_CHECK_EQ(desktop::mapKey(' ').action, desktop::KeyAction::Button);
+    AW_CHECK_EQ(desktop::mapKey(' ').button, core::ButtonId::Play);
+    AW_CHECK_EQ(desktop::mapKey('s').button, core::ButtonId::Stop);
+    AW_CHECK_EQ(desktop::mapKey('r').button, core::ButtonId::Record);
+}
+
+AW_TEST(KeyMap, MapsTrackKeysInOrder) {
+    AW_CHECK_EQ(desktop::mapKey('1').button, core::ButtonId::Track1);
+    AW_CHECK_EQ(desktop::mapKey('2').button, core::ButtonId::Track2);
+    AW_CHECK_EQ(desktop::mapKey('3').button, core::ButtonId::Track3);
+    AW_CHECK_EQ(desktop::mapKey('4').button, core::ButtonId::Track4);
+}
+
+AW_TEST(KeyMap, MapsEncoderToArrowKeys) {
+    AW_CHECK_EQ(desktop::mapKey(desktop::kKeyRight).action, desktop::KeyAction::EncoderCw);
+    AW_CHECK_EQ(desktop::mapKey(desktop::kKeyDown).action, desktop::KeyAction::EncoderCw);
+    AW_CHECK_EQ(desktop::mapKey(desktop::kKeyLeft).action, desktop::KeyAction::EncoderCcw);
+    AW_CHECK_EQ(desktop::mapKey(desktop::kKeyUp).action, desktop::KeyAction::EncoderCcw);
+    AW_CHECK_EQ(desktop::mapKey(desktop::kKeyEnter).button, core::ButtonId::EncoderPush);
+}
+
+AW_TEST(KeyMap, EscapeAndBackspaceBothMeanBack) {
+    AW_CHECK_EQ(desktop::mapKey('b').button, core::ButtonId::Back);
+    AW_CHECK_EQ(desktop::mapKey(desktop::kKeyEscape).button, core::ButtonId::Back);
+    AW_CHECK_EQ(desktop::mapKey(desktop::kKeyBackspace).button, core::ButtonId::Back);
+}
+
+AW_TEST(KeyMap, UnmappedKeysDoNothing) {
+    AW_CHECK_EQ(desktop::mapKey('z').action, desktop::KeyAction::None);
+    AW_CHECK_EQ(desktop::mapKey('9').action, desktop::KeyAction::None);
+    AW_CHECK_EQ(desktop::mapKey(0).action, desktop::KeyAction::None);
+}
+
+AW_TEST(KeyMap, QuitIsDistinctFromAnyButton) {
+    AW_CHECK_EQ(desktop::mapKey('q').action, desktop::KeyAction::Quit);
+}
+
+// --- Virtual panel geometry -------------------------------------------------
+
+AW_TEST(VirtualPanel, CentresTheCanvasAndLeavesAStrip) {
+    // The prototype's 3.5" HDMI LCD.
+    const desktop::VirtualPanelLayout layout{480, 320, 320, 240};
+
+    const hal::Rect canvas = layout.canvasArea();
+    AW_CHECK_EQ(canvas.x, std::int16_t{80});  // (480 - 320) / 2
+    AW_CHECK_EQ(canvas.y, std::int16_t{0});
+    AW_CHECK_EQ(canvas.width, std::int16_t{320});
+    AW_CHECK_EQ(canvas.height, std::int16_t{240});
+
+    const hal::Rect strip = layout.keyStripArea();
+    AW_CHECK_EQ(strip.y, std::int16_t{240});
+    AW_CHECK_EQ(strip.width, std::int16_t{480});
+    AW_CHECK_EQ(strip.height, std::int16_t{80});
+}
+
+AW_TEST(VirtualPanel, ProvidesTwelveKeysCoveringTheStrip) {
+    const desktop::VirtualPanelLayout layout{480, 320, 320, 240};
+    AW_REQUIRE(layout.keys().size() == 12);
+
+    // Six columns of 80, two rows of 40.
+    AW_CHECK_EQ(layout.keys()[0].area.width, std::int16_t{80});
+    AW_CHECK_EQ(layout.keys()[0].area.height, std::int16_t{40});
+    AW_CHECK_EQ(layout.keys()[0].id, core::ButtonId::Play);
+    AW_CHECK_EQ(layout.keys()[6].id, core::ButtonId::Track1);
+    AW_CHECK_EQ(layout.keys()[6].area.y, std::int16_t{280});  // Second row.
+}
+
+AW_TEST(VirtualPanel, HitTestsKeysInTheStrip) {
+    const desktop::VirtualPanelLayout layout{480, 320, 320, 240};
+
+    // Top-left key, first row.
+    const auto play = layout.hitTest(10, 250);
+    AW_REQUIRE(play.has_value());
+    AW_CHECK_EQ(*play, core::ButtonId::Play);
+
+    // Third column, first row.
+    const auto record = layout.hitTest(170, 250);
+    AW_REQUIRE(record.has_value());
+    AW_CHECK_EQ(*record, core::ButtonId::Record);
+
+    // First column, second row.
+    const auto track1 = layout.hitTest(10, 300);
+    AW_REQUIRE(track1.has_value());
+    AW_CHECK_EQ(*track1, core::ButtonId::Track1);
+}
+
+AW_TEST(VirtualPanel, TapsOnTheCanvasAreIgnored) {
+    // The shipping device has no touchscreen; taps on the UI itself must do
+    // nothing, or touch idioms will creep into the interaction design.
+    const desktop::VirtualPanelLayout layout{480, 320, 320, 240};
+
+    AW_CHECK(!layout.hitTest(240, 120).has_value());  // Middle of the canvas.
+    AW_CHECK(!layout.hitTest(0, 0).has_value());      // Canvas border area.
+    AW_CHECK(!layout.hitTest(479, 239).has_value());
+}
+
+AW_TEST(VirtualPanel, OffersNoKeysWhenThereIsNoRoom) {
+    // A panel exactly the size of the canvas leaves no strip.
+    const desktop::VirtualPanelLayout layout{320, 240, 320, 240};
+
+    AW_CHECK(layout.keyStripArea().isEmpty());
+    AW_CHECK(layout.keys().empty());
+    AW_CHECK(!layout.hitTest(160, 120).has_value());
+}
+
+AW_TEST(VirtualPanel, ClampsACanvasLargerThanThePanel) {
+    const desktop::VirtualPanelLayout layout{240, 160, 320, 240};
+
+    AW_CHECK_EQ(layout.canvasArea().width, std::int16_t{240});
+    AW_CHECK_EQ(layout.canvasArea().height, std::int16_t{160});
+    AW_CHECK(layout.keys().empty());
+}
+
+// --- Composite buttons ------------------------------------------------------
+
+namespace {
+
+/// A button source we can drive and make fail on demand.
+class FakeButtons final : public hal::ButtonInterface {
+public:
+    explicit FakeButtons(bool startSucceeds) : startSucceeds_{startSucceeds} {}
+
+    void setListener(hal::ButtonListener* listener) noexcept override { listener_ = listener; }
+
+    core::Status start() override {
+        if (!startSucceeds_) {
+            return core::makeError(core::ErrorCode::DeviceNotConnected, "fake");
+        }
+        started = true;
+        return core::success();
+    }
+
+    void stop() noexcept override { started = false; }
+
+    [[nodiscard]] bool isPressed(core::ButtonId id) const noexcept override {
+        return held_.has_value() && *held_ == id;
+    }
+
+    void press(core::ButtonId id) {
+        held_ = id;
+        if (listener_ != nullptr) {
+            listener_->onButtonEvent(id, core::ButtonAction::Pressed, 0);
+        }
+    }
+
+    bool started{false};
+
+private:
+    bool startSucceeds_;
+    hal::ButtonListener* listener_{nullptr};
+    std::optional<core::ButtonId> held_;
+};
+
+/// Records what reached the application.
+class RecordingListener final : public hal::ButtonListener {
+public:
+    void onButtonEvent(core::ButtonId id, core::ButtonAction, std::uint64_t) noexcept override {
+        received.push_back(id);
+    }
+    std::vector<core::ButtonId> received;
+};
+
+}  // namespace
+
+AW_TEST(CompositeButtons, MergesEveryeSourceIntoOneStream) {
+    auto encoderPush = std::make_unique<FakeButtons>(true);
+    auto touchKeys = std::make_unique<FakeButtons>(true);
+    FakeButtons* encoderPtr = encoderPush.get();
+    FakeButtons* touchPtr = touchKeys.get();
+
+    CompositeButtons composite;
+    composite.addSource(std::move(encoderPush));
+    composite.addSource(std::move(touchKeys));
+
+    RecordingListener listener;
+    composite.setListener(&listener);
+    AW_REQUIRE(static_cast<bool>(composite.start()));
+    AW_CHECK_EQ(composite.startedCount(), std::size_t{2});
+
+    // The real prototype's split: encoder push on GPIO, everything else on touch.
+    encoderPtr->press(core::ButtonId::EncoderPush);
+    touchPtr->press(core::ButtonId::Play);
+
+    AW_REQUIRE(listener.received.size() == 2);
+    AW_CHECK_EQ(listener.received[0], core::ButtonId::EncoderPush);
+    AW_CHECK_EQ(listener.received[1], core::ButtonId::Play);
+}
+
+AW_TEST(CompositeButtons, SurvivesASourceThatCannotStart) {
+    // A missing touchscreen must not stop the encoder from working.
+    auto working = std::make_unique<FakeButtons>(true);
+    auto broken = std::make_unique<FakeButtons>(false);
+    FakeButtons* workingPtr = working.get();
+
+    CompositeButtons composite;
+    composite.addSource(std::move(working));
+    composite.addSource(std::move(broken));
+
+    AW_REQUIRE(static_cast<bool>(composite.start()));
+    AW_CHECK_EQ(composite.startedCount(), std::size_t{1});
+    AW_CHECK(workingPtr->started);
+}
+
+AW_TEST(CompositeButtons, FailsOnlyWhenNoSourceStarts) {
+    CompositeButtons composite;
+    composite.addSource(std::make_unique<FakeButtons>(false));
+
+    const auto status = composite.start();
+    AW_REQUIRE(!status.hasValue());
+    AW_CHECK_EQ(status.error().code(), core::ErrorCode::DeviceNotConnected);
+}
+
+AW_TEST(CompositeButtons, ReportsHeldFromAnySource) {
+    auto first = std::make_unique<FakeButtons>(true);
+    auto second = std::make_unique<FakeButtons>(true);
+    FakeButtons* secondPtr = second.get();
+
+    CompositeButtons composite;
+    composite.addSource(std::move(first));
+    composite.addSource(std::move(second));
+    AW_REQUIRE(static_cast<bool>(composite.start()));
+
+    AW_CHECK(!composite.isPressed(core::ButtonId::Record));
+    secondPtr->press(core::ButtonId::Record);
+    AW_CHECK(composite.isPressed(core::ButtonId::Record));
+}
+
+AW_TEST(CompositeButtons, WithNoSourcesFailsRatherThanPretending) {
+    CompositeButtons composite;
+    AW_CHECK_EQ(composite.sourceCount(), std::size_t{0});
+    AW_CHECK(!composite.start().hasValue());
+}

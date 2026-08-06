@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "aw/core/Logger.hpp"
+#include "aw/platform/desktop/DevBackends.hpp"
 #include "aw/platform/posix/PosixStorage.hpp"
 
 namespace aw::platform::simulator {
@@ -25,76 +26,6 @@ public:
     void sleepMicros(std::uint64_t micros) override {
         std::this_thread::sleep_for(std::chrono::microseconds{micros});
     }
-};
-
-/// In-memory panel.  Keeps the last frame so a test (or a developer) can dump it.
-class MemoryDisplay final : public hal::DisplayInterface {
-public:
-    hal::DisplayInfo info() const noexcept override { return info_; }
-
-    core::Status open() override {
-        pixels_.assign(static_cast<std::size_t>(info_.width) * info_.height, 0);
-        return core::success();
-    }
-
-    void close() noexcept override { pixels_.clear(); }
-
-    core::Status blit(const hal::Rect& area, std::span<const std::uint16_t> source) override {
-        if (pixels_.empty()) {
-            return core::makeError(core::ErrorCode::InvalidState, "display not open");
-        }
-        if (source.size() < static_cast<std::size_t>(area.pixelCount())) {
-            return core::makeError(core::ErrorCode::InvalidArgument, "short pixel span");
-        }
-        for (std::int16_t y = 0; y < area.height; ++y) {
-            const auto destinationRow = static_cast<std::size_t>(area.y + y);
-            if (destinationRow >= info_.height) {
-                break;
-            }
-            for (std::int16_t x = 0; x < area.width; ++x) {
-                const auto destinationColumn = static_cast<std::size_t>(area.x + x);
-                if (destinationColumn >= info_.width) {
-                    break;
-                }
-                pixels_[destinationRow * info_.width + destinationColumn] =
-                    source[static_cast<std::size_t>(y) * static_cast<std::size_t>(area.width) +
-                           static_cast<std::size_t>(x)];
-            }
-        }
-        return core::success();
-    }
-
-    core::Status present() override { return core::success(); }
-
-    core::Status setBacklight(float /*level*/) override { return core::success(); }
-
-private:
-    hal::DisplayInfo info_{320, 240, false};
-    std::vector<std::uint16_t> pixels_;
-};
-
-/// No physical buttons.  A future simulator can drive the listener from stdin
-/// or a socket; the point of this class is that the app runs without one.
-class NullButtons final : public hal::ButtonInterface {
-public:
-    void setListener(hal::ButtonListener* listener) noexcept override { listener_ = listener; }
-    core::Status start() override { return core::success(); }
-    void stop() noexcept override { listener_ = nullptr; }
-    bool isPressed(core::ButtonId /*id*/) const noexcept override { return false; }
-
-private:
-    hal::ButtonListener* listener_{nullptr};
-};
-
-class NullEncoder final : public hal::EncoderInterface {
-public:
-    void setListener(hal::EncoderListener* listener) noexcept override { listener_ = listener; }
-    core::Status start() override { return core::success(); }
-    void stop() noexcept override { listener_ = nullptr; }
-    std::int32_t consumeDelta() noexcept override { return 0; }
-
-private:
-    hal::EncoderListener* listener_{nullptr};
 };
 
 /// Wall-clock audio output.
@@ -229,19 +160,26 @@ core::Result<hal::Platform> createPlatform(const core::Path& projectsRoot) {
     hal::Platform platform;
     platform.clock = std::make_unique<SteadyClock>();
     platform.storage = std::make_unique<posix::PosixStorage>(projectsRoot);
-    platform.display = std::make_unique<MemoryDisplay>();
-    platform.buttons = std::make_unique<NullButtons>();
-    platform.encoder = std::make_unique<NullEncoder>();
     platform.audioOutput = std::make_unique<TimedNullAudioOutput>();
     platform.audioInput = nullptr;
     platform.usb = std::make_unique<NullUsb>();
     platform.mtp = std::make_unique<NullMtp>();
 
+    // Display and input come from whatever is actually attached: the Linux
+    // framebuffer with a touch key strip on the bench, an ANSI terminal preview
+    // over SSH, or nothing at all in CI.  Selection lives in one place so both
+    // this and the Pi assembly behave identically.
+    desktop::DevBackends backends = desktop::createDevBackends(desktop::optionsFromEnvironment());
+    platform.display = std::move(backends.display);
+    platform.buttons = std::move(backends.buttons);
+    platform.encoder = std::move(backends.encoder);
+
     if (!platform.isComplete()) {
         return core::makeError(core::ErrorCode::Unknown, "simulator platform incomplete");
     }
 
-    core::log::info(kModule, "simulator platform ready (projects: " + projectsRoot.string() + ")");
+    core::log::info(kModule, "development platform ready: " + backends.description +
+                                 " (projects: " + projectsRoot.string() + ")");
     return platform;
 }
 

@@ -71,5 +71,7 @@ Project/
 
 - **[docs/architecture.md](docs/architecture.md)** — every architectural decision, the
   alternatives considered, and what each choice costs. Start here.
+- **[docs/hardware.md](docs/hardware.md)** — prototype wiring (HDMI LCD, XPT2046 touch,
+  KY-040 encoder), setup, and the keyboard control map.
 - **[docs/build.md](docs/build.md)** — building, testing, options, sanitisers.
 - **[docs/roadmap.md](docs/roadmap.md)** — the eight phases and what each delivers.

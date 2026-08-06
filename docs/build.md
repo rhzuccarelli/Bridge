@@ -23,12 +23,15 @@ Raspberry Pi, so this works on a laptop with no hardware attached.
 ## Running the tests
 
 ```bash
-./build/tests/aw_tests        # direct, with per-test output
-ctest --test-dir build        # through CTest
+./build/tests/aw_tests           # portable modules
+./build/tests/aw_platform_tests  # platform backend logic
+ctest --test-dir build           # both, through CTest
 ```
 
-The suite links only portable modules — no ALSA, no GPIO, no display driver. That is
-deliberate: see `docs/architecture.md` §11.
+Two executables on purpose. `aw_tests` links only portable modules — no ALSA, no
+GPIO, no display driver — and that is the architectural claim this project makes, so
+platform tests get their own target rather than diluting it. See
+`docs/architecture.md` §11.
 
 ## Running the application
 
@@ -36,9 +39,19 @@ deliberate: see `docs/architecture.md` §11.
 AW_PROJECTS_ROOT=./projects ./build/src/app/audio-workstation
 ```
 
-On the simulator this starts the full application: event bus, audio engine (driven by
-a wall-clock thread that discards its output), an in-memory display, and the UI main
-loop at 30 Hz. `Ctrl-C` requests a clean shutdown.
+This starts the full application: event bus, audio engine (driven by a wall-clock
+thread that discards its output), the UI main loop at 30 Hz, and whichever display and
+input backends are actually available. `Ctrl-C` requests a clean shutdown.
+
+Display and input are chosen at startup and degrade gracefully — the Linux framebuffer
+with a touch key strip on the bench, an ANSI terminal preview over SSH, headless in CI.
+`AW_DISPLAY`, `AW_INPUT` and the rest are documented in
+[docs/hardware.md](hardware.md), along with the keyboard control map:
+
+```bash
+# Live preview of the real framebuffer in your terminal, keyboard driven
+AW_DISPLAY=terminal ./build/src/app/audio-workstation
+```
 
 ## Raspberry Pi 5 build
 

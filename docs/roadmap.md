@@ -9,6 +9,22 @@ Project skeleton, HAL interfaces, placeholder classes for every subsystem, the
 simulator backend, a runnable application shell, and 59 unit tests. Every
 architectural decision is written down in `docs/architecture.md`.
 
+## Phase 1.5 — Prototype I/O backends ✅
+
+Real display and input for the bench hardware, so every later phase gets visual
+feedback on the actual device as it lands rather than at the end.
+
+- `FramebufferDisplay` — the 3.5" HDMI LCD via `/dev/fb0`, 16 and 32 bpp, with
+  the 320×240 logical canvas letterboxed inside the 480×320 panel.
+- `EvdevTouch` — XPT2046 through the kernel, hit-testing a virtual key strip and
+  emitting ordinary `ButtonId`s. Touch never reaches the UI.
+- `TerminalDisplay` / `KeyboardInput` — ANSI truecolour preview and key control,
+  for working over SSH with no hardware at all.
+- `CompositeButtons` — merges GPIO, touch and keyboard into one event stream.
+
+See `docs/hardware.md` for wiring and setup. The KY-040 encoder itself is still
+Phase 6 (it needs libgpiod); its pin map and decoding requirements are recorded.
+
 ## Phase 2 — WAV support
 
 `WavReader`, `WavWriter`, `WavMetadata`, `SampleConverter`.

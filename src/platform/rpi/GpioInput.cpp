@@ -8,8 +8,14 @@ namespace aw::platform::rpi {
 
 GpioPinMap GpioPinMap::prototype() noexcept {
     GpioPinMap map;
-    // Prototype wiring on the Pi 5's 40-pin header.  Kept together so a
-    // rewiring is one diff; see docs/hardware.md for the physical layout.
+    // Prototype wiring on the Pi 5's 40-pin header (BCM numbering).  Kept
+    // together so a rewiring is one diff; see docs/hardware.md for the physical
+    // layout and the KY-040 notes.
+    //
+    // Only the encoder is wired on the current prototype: CLK -> 17, DT -> 27,
+    // SW -> 22.  The remaining button lines below are the intended assignment
+    // for when physical switches are added; until then those controls come from
+    // the touch strip or the keyboard, merged in by `CompositeButtons`.
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Play)] = 5;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Stop)] = 6;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Record)] = 13;
@@ -22,9 +28,13 @@ GpioPinMap GpioPinMap::prototype() noexcept {
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track2)] = 22;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track3)] = 23;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track4)] = 24;
-    map.buttonLines[static_cast<std::size_t>(core::ButtonId::EncoderPush)] = 4;
-    map.encoderLineA = 17;
-    map.encoderLineB = 18;
+    // KY-040: CLK -> encoder A, DT -> encoder B, SW -> the push switch.
+    // All three need pull-ups; the module's own resistors are unreliable, so
+    // Phase 6 requests GPIO_V2_LINE_FLAG_BIAS_PULL_UP from libgpiod rather than
+    // depending on the board.
+    map.buttonLines[static_cast<std::size_t>(core::ButtonId::EncoderPush)] = 22;  // SW
+    map.encoderLineA = 17;                                                        // CLK
+    map.encoderLineB = 27;                                                        // DT
     return map;
 }
 

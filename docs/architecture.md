@@ -221,6 +221,41 @@ panel. Two sizes cover the whole UI.
 
 ---
 
+### The prototype's panel is an HDMI monitor, and its touchscreen is not a pointer
+
+The bench prototype uses a 3.5" 480×320 HDMI LCD with an XPT2046 resistive touch
+panel. Two consequences, both of which had to be decided rather than drifted into:
+
+**The display backend is `/dev/fb0`, not an SPI driver.** From the Pi's point of view
+that panel is an ordinary monitor. `FramebufferDisplay` reports the *logical* 320×240
+canvas through `info()` and maps blits into the physical panel itself, so everything
+above draws for the shipping device's screen no matter what is plugged in. The canvas
+is letterboxed, not stretched: designing layouts against 480×320 and shrinking them
+for the ESP32-P4's 320×240 later is pure rework.
+
+**Touch is a `ButtonInterface`, not a pointer device.** The brief is explicit that the
+product has no touchscreen, and that constraint has to survive the prototype or the
+interaction design quietly becomes touch-shaped and then fails to port to a device
+with a knob and eight switches. So `EvdevTouch` hit-tests a tap against a
+`VirtualPanelLayout` — a strip of virtual keys drawn in the space around the canvas —
+and emits an ordinary `ButtonId`. Taps on the canvas itself are discarded. Nothing
+upstream can tell a virtual key from a real switch, which is exactly the point.
+
+Reading evdev rather than driving the XPT2046 over SPI directly: the kernel driver
+already does ADC sampling, pressure thresholding, debouncing and calibration. Writing
+that again would be worse in every respect.
+
+**`CompositeButtons`** merges several button backends into one stream, because the
+prototype genuinely needs it: the KY-040's push switch is a real GPIO line while the
+other controls are virtual keys, and the application is entitled to assume there is
+exactly one set of buttons. Composition rather than a backend that knows about other
+backends — each source stays a plain `ButtonInterface`, and the merge is testable with
+fakes.
+
+None of this is in the shipping device. It lives in `aw_platform_dev`, a separate
+library from the Pi assembly, so the distinction is visible in the build rather than
+only in a comment.
+
 ## 7. MTP is not a filesystem
 
 `MTPInterface` is a separate HAL interface rather than a second `StorageInterface`
@@ -319,6 +354,11 @@ The fakes that make it work:
   ("the card is full", "the file is truncated"), with no filesystem and no cleanup.
 - `FakeUsb` / `FakeMtp` in `tests/mtp/` — a USB bus you plug devices into by hand.
 - `SpyScreen` in `tests/ui/` — the navigator tested without constructing real screens.
+
+Platform backend logic (key mapping, virtual panel geometry, source merging) is
+covered by a **second** executable, `aw_platform_tests`. Folding it into `aw_tests`
+would have destroyed the property in the paragraph above, which is the only
+mechanical check that the portable layers stay portable.
 
 **Why a hand-rolled 150-line test framework** instead of GoogleTest or Catch2: both
 would be fetched at configure time, which means the build stops working on a machine
