@@ -1,0 +1,73 @@
+#pragma once
+
+#include <atomic>
+#include <memory>
+
+#include "aw/audio/AudioBuffer.hpp"
+#include "aw/audio/WavReader.hpp"
+#include "aw/core/Result.hpp"
+#include "aw/core/Types.hpp"
+
+namespace aw::audio {
+
+/// Per-track mix parameters.
+///
+/// Plain values, updated atomically from the UI thread and read by the audio
+/// thread.  Smoothing (to avoid zipper noise on gain changes) is applied inside
+/// `TrackPlayer`, not here.
+struct TrackMixState {
+    std::atomic<float> gain{1.0F};    ///< Linear, 0 .. ~4 (+12 dB).
+    std::atomic<float> pan{0.0F};     ///< -1 hard left .. +1 hard right.
+    std::atomic<bool> muted{false};
+    std::atomic<bool> soloed{false};
+};
+
+/// Streams one track's audio and applies its mix parameters.
+///
+/// Phase 4 implements this.  The split that matters: `prefetch()` runs on the
+/// streaming thread and does all the file I/O, filling a ring buffer;
+/// `render()` runs on the audio thread and only ever consumes from that ring.
+/// If the ring runs dry the track outputs silence and flags an underrun - it
+/// never blocks, and one slow track cannot take the whole mix down.
+class TrackPlayer {
+public:
+    TrackPlayer();
+    ~TrackPlayer();
+
+    TrackPlayer(const TrackPlayer&) = delete;
+    TrackPlayer& operator=(const TrackPlayer&) = delete;
+
+    /// Binds this player to an audio file.  Called from the UI/loader thread
+    /// while the transport is stopped, or on a background load for a new clip.
+    [[nodiscard]] core::Status setSource(hal::StorageInterface& storage, const core::Path& path);
+
+    void clearSource() noexcept;
+    [[nodiscard]] bool hasSource() const noexcept;
+
+    [[nodiscard]] TrackMixState& mix() noexcept { return mix_; }
+    [[nodiscard]] const TrackMixState& mix() const noexcept { return mix_; }
+
+    // --- Streaming thread ---------------------------------------------------
+    /// Reads ahead from disk so `render()` never has to wait.  Blocking.
+    [[nodiscard]] core::Status prefetch(core::FrameIndex timelinePosition);
+
+    // --- Audio thread -------------------------------------------------------
+    /// Adds this track's contribution into `destination` (which is *not*
+    /// cleared first - the mixer owns that).  Realtime safe, never blocks.
+    void render(AudioBuffer& destination,
+                core::FrameIndex timelinePosition,
+                core::FrameCount frames) noexcept;
+
+    /// Peak of the last rendered block, for the meters.  Realtime safe to read.
+    [[nodiscard]] float lastPeak() const noexcept;
+
+    /// True if `render()` found the buffer dry since the last check (clears it).
+    [[nodiscard]] bool consumeUnderrunFlag() noexcept;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+    TrackMixState mix_;
+};
+
+}  // namespace aw::audio
