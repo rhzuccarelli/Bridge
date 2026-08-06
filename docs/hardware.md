@@ -35,21 +35,29 @@ along the bottom rather than two useless bands.
 
 ### Setup
 
-Set the mode in `/boot/firmware/config.txt` (path is `/boot/config.txt` on older
-images):
-
-```ini
-hdmi_group=2
-hdmi_mode=87
-hdmi_cvt=480 320 60 6 0 0 0
-hdmi_force_hotplug=1
-```
-
-Confirm the geometry and depth:
+**First, just plug it in and boot.** Most of these panels advertise their mode over
+EDID and come up at 480×320 with no configuration at all. Check:
 
 ```bash
 fbset -s              # expect 480x320, 16 or 32 bpp
 ```
+
+If that is right, you are done — skip the rest of this section.
+
+**If the mode is wrong, force it in `/boot/firmware/cmdline.txt`** by adding this to
+the single line already there (space separated, do not add a newline):
+
+```
+video=HDMI-A-1:480x320M@60
+```
+
+> ⚠️ The legacy `hdmi_group` / `hdmi_mode` / `hdmi_cvt` settings in `config.txt` do
+> **not** work on a Raspberry Pi 5. The Pi 5 is KMS-only, and those options are
+> handled by the old framebuffer driver it does not have. Guides that tell you
+> otherwise predate the Pi 5. Use the `cmdline.txt` `video=` parameter above.
+
+`/dev/fb0` still exists under KMS through DRM's framebuffer emulation, which is what
+`FramebufferDisplay` uses.
 
 The user running the application needs the `video` group:
 
@@ -122,6 +130,11 @@ what the shipping device will use. Wiring (BCM numbering):
 | `CLK` | pin 11 | 17 |
 | `DT`  | pin 13 | 27 |
 | `SW`  | pin 15 | 22 |
+
+Which gpiochip carries the header moved between kernel releases: on a Pi 5 the
+pins sit behind the RP1 southbridge, exposed as `gpiochip4` by older Bookworm
+kernels and `gpiochip0` by newer ones. Run `gpiodetect` and use whichever
+reports **54 lines**; override the default with `AW_GPIO_CHIP=gpiochipN`.
 
 ⚠️ **`+` goes to 3.3 V, not 5 V.** The Pi's GPIO is not 5 V tolerant, and a
 KY-040 powered from 5 V will put 5 V on CLK/DT/SW.

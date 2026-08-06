@@ -1,9 +1,12 @@
 #include "aw/platform/rpi/RpiPlatform.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <thread>
 
 #include "aw/core/Logger.hpp"
+#include "aw/platform/CompositeButtons.hpp"
+#include "aw/platform/desktop/DevBackends.hpp"
 #include "aw/platform/posix/PosixStorage.hpp"
 #include "aw/platform/rpi/AlsaAudioOutput.hpp"
 #include "aw/platform/rpi/LibMtpDevice.hpp"
@@ -30,22 +33,41 @@ public:
 }  // namespace
 
 core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
+    RpiConfig effective = config;
+    if (const char* chip = std::getenv("AW_GPIO_CHIP")) {
+        effective.pins.chipName = chip;  // See GpioPinMap::chipName for why.
+    }
+
     hal::Platform platform;
     platform.clock = std::make_unique<SteadyClock>();
-    platform.storage = std::make_unique<posix::PosixStorage>(config.projectsRoot);
-    platform.display = std::make_unique<SpiDisplay>(config.display);
-    platform.buttons = std::make_unique<GpioButtons>(config.pins);
-    platform.encoder = std::make_unique<GpioEncoder>(config.pins);
-    platform.audioOutput = std::make_unique<AlsaAudioOutput>(config.alsaDevice);
+    platform.storage = std::make_unique<posix::PosixStorage>(effective.projectsRoot);
+    platform.audioOutput = std::make_unique<AlsaAudioOutput>(effective.alsaDevice);
     platform.audioInput = nullptr;  // Phase 4+: capture for punch-in.
     platform.usb = std::make_unique<LibUsbHost>();
     platform.mtp = std::make_unique<LibMtpDevice>();
+
+    // Display and input: the prototype drives an HDMI panel through the Linux
+    // framebuffer and takes its non-encoder buttons from the touch strip, so it
+    // uses the same development backends as the simulator assembly.  The real
+    // encoder is GPIO and is merged in alongside them.
+    desktop::DevBackends backends = desktop::createDevBackends(desktop::optionsFromEnvironment());
+    platform.display = std::move(backends.display);
+
+    auto buttons = std::make_unique<CompositeButtons>();
+    buttons->addSource(std::make_unique<GpioButtons>(effective.pins));
+    buttons->addSource(std::move(backends.buttons));
+    platform.buttons = std::move(buttons);
+
+    // The KY-040 is the real control; the keyboard encoder stays available as a
+    // fallback only when there is no GPIO encoder to be had.
+    platform.encoder = std::make_unique<GpioEncoder>(effective.pins);
 
     if (!platform.isComplete()) {
         return core::makeError(core::ErrorCode::Unknown, "rpi platform incomplete");
     }
 
-    core::log::info(kModule, "Raspberry Pi platform constructed");
+    core::log::info(kModule, "Raspberry Pi platform ready: " + backends.description +
+                                 " + GPIO (" + effective.pins.chipName + ")");
     return platform;
 }
 

@@ -17,6 +17,13 @@ struct GpioPinMap {
     std::array<int, core::kButtonCount> buttonLines{};
     int encoderLineA{0};
     int encoderLineB{0};
+
+    /// Which gpiochip carries the 40-pin header.
+    ///
+    /// Not a constant, because it moved: on a Pi 5 the header lives behind the
+    /// RP1 southbridge, which older Bookworm kernels expose as `gpiochip4` and
+    /// newer ones as `gpiochip0`.  Run `gpiodetect` and use whichever reports
+    /// 54 lines; `AW_GPIO_CHIP` overrides it at runtime.
     std::string chipName{"gpiochip0"};
 
     /// The prototype's wiring.  Documented in docs/hardware.md.
