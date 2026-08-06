@@ -28,13 +28,28 @@ GpioPinMap GpioPinMap::prototype() noexcept {
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track2)] = 22;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track3)] = 23;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track4)] = 24;
-    // KY-040: CLK -> encoder A, DT -> encoder B, SW -> the push switch.
-    // All three need pull-ups; the module's own resistors are unreliable, so
-    // Phase 6 requests GPIO_V2_LINE_FLAG_BIAS_PULL_UP from libgpiod rather than
-    // depending on the board.
-    map.buttonLines[static_cast<std::size_t>(core::ButtonId::EncoderPush)] = 22;  // SW
-    map.encoderLineA = 17;                                                        // CLK
-    map.encoderLineB = 27;                                                        // DT
+    // KY-040, wired entirely into the odd-numbered pins from 29 to 39 - the
+    // tail of the header that the LCD HAT (pins 1-26) leaves exposed.
+    //
+    //   pin 29 / GPIO 5   CLK
+    //   pin 31 / GPIO 6   DT
+    //   pin 33 / GPIO 13  SW
+    //   pin 37 / GPIO 26  +    (driven high; see GpioPinMap::encoderPowerLine)
+    //   pin 39            GND
+    //
+    // Pin 35 (GPIO 19) is skipped deliberately: GPIO 18-21 carry I2S, and
+    // leaving them free keeps the option of an I2S audio codec open.  GPIO 0/1
+    // (pins 27/28) are reserved for HAT identification and must not be used.
+    //
+    // All three signal lines need pull-ups.  With `+` fed from a GPIO rather
+    // than a power rail the module's own resistors still work, but the driver
+    // requests BIAS_PULL_UP from libgpiod regardless - it costs nothing and
+    // makes the wiring tolerant of a module whose resistors are absent or of a
+    // power line that has not come up yet.
+    map.buttonLines[static_cast<std::size_t>(core::ButtonId::EncoderPush)] = 13;  // SW
+    map.encoderLineA = 5;                                                         // CLK
+    map.encoderLineB = 6;                                                         // DT
+    map.encoderPowerLine = 26;                                                    // +
     return map;
 }
 

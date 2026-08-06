@@ -296,21 +296,51 @@ You want `480 320`. If it differs, see the display section of
 
 **Unplug the Pi's power first.**
 
-Holding the Pi with the USB ports facing you, the 40 pins run along the top edge.
-Pin 1 is the **top-left** pin.
+Your LCD HAT covers header pins 1–26, so everything goes into the **exposed tail at
+the far end** — pins 27 to 40.
 
-| KY-040 pin | Connect to Pi | Which pin is that |
+### Finding the pins
+
+The header has 40 pins in two rows of 20. Odd numbers (1, 3, 5 …) are one row, even
+numbers (2, 4, 6 …) the other. The HAT covers the first 13 pairs; you want the
+exposed ones past it.
+
+**The easiest way to count is backwards from the end.** In the odd row, the very
+last pin is 39, then working back: 37, 35, 33, 31, 29.
+
+```
+   ... [HAT covers up to here] |  29   31   33   35   37   39   <- odd row (last pin)
+                               |  30   32   34   36   38   40   <- even row
+```
+
+### The connections
+
+| KY-040 pin | Pi pin | Counting from the end of the odd row |
 | --- | --- | --- |
-| `+` | **3.3 V** | pin 1 — top-left corner |
-| `GND` | Ground | pin 6 — 3rd from left, bottom row |
-| `CLK` | GPIO 17 | pin 11 — 6th from left, top row |
-| `DT` | GPIO 27 | pin 13 — 7th from left, top row |
-| `SW` | GPIO 22 | pin 15 — 8th from left, top row |
+| `CLK` | pin 29 | 6th from the end |
+| `DT` | pin 31 | 5th from the end |
+| `SW` | pin 33 | 4th from the end |
+| `+` | pin 37 | 2nd from the end |
+| `GND` | pin 39 | **last pin** |
 
-> ⚠️ **`+` goes to 3.3 V, not 5 V.** The Pi's pins are not 5 V tolerant, and a
-> KY-040 powered from 5 V will feed 5 V back into GPIO 17/27/22 and can permanently
-> damage the Pi. Pin 1 is 3.3 V; pin 2 (directly below it) is 5 V — do not confuse
-> them.
+All five wires go into the same row. **Skip pin 35** (the 3rd from the end) — it is
+left free for a future audio codec.
+
+> ⚠️ **Never use pins 2 or 4.** Those are 5 V, and the Pi's GPIO is not 5 V
+> tolerant — a KY-040 powered from 5 V feeds 5 V back into the signal pins and can
+> permanently kill the board.
+
+### "Wait, isn't `+` supposed to be a power pin?"
+
+Yes — and both of the Pi's 3.3 V pins are underneath your HAT. So instead, the
+software switches **pin 37 on** and uses it as a small power supply. The encoder
+draws about 1 mA; a Pi pin can supply 16 mA. It is well within spec.
+
+You might be wondering why we do not just leave `+` unconnected. It seems like it
+should work, but it does not: the encoder's internal resistors all share that pin,
+so closing one contact drags the other two signals to about 1.2 V — which is
+neither a clean "high" nor a clean "low". The result is an encoder that *mostly*
+works and randomly misses or doubles steps. Much better to supply it properly.
 
 Power back up, then 🍓:
 
@@ -326,8 +356,43 @@ Note which chip reports **54 lines** — that is the 40-pin header. On a Pi 5 it
 AW_GPIO_CHIP=gpiochip4 ./scripts/run-pi.sh
 ```
 
-> The encoder does not do anything yet — its driver is Phase 6. This step just gets
-> it wired and confirms which chip name to use.
+### Test the wiring right now
+
+The app cannot use the encoder yet (its driver is Phase 6), but you can prove the
+wiring is right today with the command-line tools. Worth doing — finding a swapped
+wire now is much easier than debugging it later.
+
+🍓 Open **two** SSH sessions to the Pi (just run `ssh pi@audiopi.local` twice on
+your Mac).
+
+**In session 1**, switch the encoder's power pin on and leave it running:
+
+```bash
+gpioset --mode=wait gpiochip0 26=1
+```
+
+Nothing prints — that is correct. It is holding pin 37 high. Leave this window
+alone.
+
+**In session 2**, watch the CLK line while you turn the knob:
+
+```bash
+gpiomon --falling-edge gpiochip0 5
+```
+
+**✅ Check:** turning the knob prints a line per click. Press `Ctrl-C`, then repeat
+for `6` (DT) and `13` (SW — this one responds to *pressing* the knob, not turning).
+
+If all three respond, your wiring is correct and Phase 6 will just work.
+
+> **Nothing prints?** Check `gpioset` is still running in session 1 — if you closed
+> it, the encoder lost power. Also confirm the chip name from `gpiodetect` and
+> substitute it in both commands.
+>
+> **`gpioset: invalid option`?** You have libgpiod v2, which changed the syntax.
+> Use `gpioset -t0 gpiochip0 26=1` and `gpiomon -e falling gpiochip0 5`.
+
+When you are done, press `Ctrl-C` in both windows.
 
 ---
 

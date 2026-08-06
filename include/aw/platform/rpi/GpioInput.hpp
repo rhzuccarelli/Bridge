@@ -18,6 +18,23 @@ struct GpioPinMap {
     int encoderLineA{0};
     int encoderLineB{0};
 
+    /// A GPIO driven permanently high, used as the encoder module's 3.3 V supply.
+    /// Negative means "not used - the module is wired to a real 3.3 V pin".
+    ///
+    /// This exists because the prototype's LCD HAT occupies header pins 1-26,
+    /// which is where *both* 3.3 V pins live.  A KY-040 cannot simply run with
+    /// its `+` floating: its three 10k pull-ups share that node, so closing one
+    /// contact drags the other two lines to roughly 1.2 V - right in the
+    /// indeterminate band between logic low and logic high, which reads as an
+    /// intermittently broken encoder rather than as a wiring fault.
+    ///
+    /// Driving a spare GPIO high instead is safe: the module draws at most
+    /// ~1 mA (3 x 3.3 V / 10k with every contact closed), far below the 16 mA a
+    /// Pi pin can source.  The line must be requested as an output *before* the
+    /// encoder lines are read, and the request held open for as long as the
+    /// encoder is in use.
+    int encoderPowerLine{-1};
+
     /// Which gpiochip carries the 40-pin header.
     ///
     /// Not a constant, because it moved: on a Pi 5 the header lives behind the
