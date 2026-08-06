@@ -1,0 +1,46 @@
+#
+# systemd unit - start the workstation at boot, like firmware.
+#
+# Install it (on the Pi):
+#     sudo cp scripts/audio-workstation.service /etc/systemd/system/
+#     sudo sed -i "s/%USER%/$USER/g; s|%DIR%|$HOME/audio-workstation|g" \
+#         /etc/systemd/system/audio-workstation.service
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now audio-workstation
+#
+# Watch it:      journalctl -u audio-workstation -f
+# Stop it:       sudo systemctl stop audio-workstation
+# Disable it:    sudo systemctl disable audio-workstation
+#
+# Note: while this is running it owns the framebuffer, so stop it before running
+# the app by hand or the two will fight over the panel.
+#
+[Unit]
+Description=Audio Workstation
+After=multi-user.target sound.target
+Wants=sound.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=%DIR%
+ExecStart=%DIR%/build/src/app/audio-workstation
+
+Environment=AW_DISPLAY=fb
+Environment=AW_INPUT=touch
+Environment=AW_PROJECTS_ROOT=/home/%USER%/audio-projects
+
+# The UI thread is not realtime, but the audio thread will want to be from
+# Phase 5 onward; granting it here avoids a second round of permissions later.
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+
+Restart=on-failure
+RestartSec=3
+
+# There is no terminal, so send the log somewhere you can read it.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

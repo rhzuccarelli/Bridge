@@ -23,15 +23,21 @@ project, MTP and display *implementations* are Phase 2–8 work; their stubs ret
 
 ## Quick start
 
+**Deploying to a Raspberry Pi for the first time?** Follow
+**[docs/deploy-from-mac.md](docs/deploy-from-mac.md)** — a complete walkthrough from a
+brand-new Pi in the box to the app running, assuming no prior Raspberry Pi experience.
+
+Building locally:
+
 ```bash
 cmake -S . -B build -G Ninja
 cmake --build build
-./build/tests/aw_tests
+ctest --test-dir build
 AW_PROJECTS_ROOT=./projects ./build/src/app/audio-workstation
 ```
 
 No third-party dependencies in Phase 1. See [docs/build.md](docs/build.md) for the
-Raspberry Pi build and the available options.
+options.
 
 ## Layout
 
@@ -71,6 +77,8 @@ Project/
 
 - **[docs/architecture.md](docs/architecture.md)** — every architectural decision, the
   alternatives considered, and what each choice costs. Start here.
+- **[docs/deploy-from-mac.md](docs/deploy-from-mac.md)** — step-by-step: unboxing a Pi 5
+  through to running the app, from a Mac. Start here if the Pi is new.
 - **[docs/hardware.md](docs/hardware.md)** — prototype wiring (HDMI LCD, XPT2046 touch,
   KY-040 encoder), setup, and the keyboard control map.
 - **[docs/build.md](docs/build.md)** — building, testing, options, sanitisers.
