@@ -28,28 +28,28 @@ GpioPinMap GpioPinMap::prototype() noexcept {
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track2)] = 22;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track3)] = 23;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track4)] = 24;
-    // KY-040, wired entirely into the odd-numbered pins from 29 to 39 - the
-    // tail of the header that the LCD HAT (pins 1-26) leaves exposed.
+    // KY-040, on the original clean assignment near the start of the header:
     //
-    //   pin 29 / GPIO 5   CLK
-    //   pin 31 / GPIO 6   DT
-    //   pin 33 / GPIO 13  SW
-    //   pin 37 / GPIO 26  +    (driven high; see GpioPinMap::encoderPowerLine)
-    //   pin 39            GND
+    //   pin 11 / GPIO 17  CLK
+    //   pin 13 / GPIO 27  DT
+    //   pin 15 / GPIO 22  SW
+    //   pin 1             +    (real 3.3 V rail)
+    //   pin 6 or 9        GND
     //
-    // Pin 35 (GPIO 19) is skipped deliberately: GPIO 18-21 carry I2S, and
-    // leaving them free keeps the option of an I2S audio codec open.  GPIO 0/1
-    // (pins 27/28) are reserved for HAT identification and must not be used.
+    // This layout is only reachable when the 40-pin header is *not* covered by a
+    // pin-hungry HAT - i.e. when the display is a jumper-wired module (the SPI
+    // OLED) or the HAT is lifted on a stacking header.  With the original 3.5"
+    // LCD HAT sitting directly on pins 1-26 these lines are buried, which is why
+    // an earlier revision moved the encoder to the 29-39 tail; see the project
+    // history if that arrangement is ever needed again.
     //
-    // All three signal lines need pull-ups.  With `+` fed from a GPIO rather
-    // than a power rail the module's own resistors still work, but the driver
-    // requests BIAS_PULL_UP from libgpiod regardless - it costs nothing and
-    // makes the wiring tolerant of a module whose resistors are absent or of a
-    // power line that has not come up yet.
-    map.buttonLines[static_cast<std::size_t>(core::ButtonId::EncoderPush)] = 13;  // SW
-    map.encoderLineA = 5;                                                         // CLK
-    map.encoderLineB = 6;                                                         // DT
-    map.encoderPowerLine = 26;                                                    // +
+    // All three signal lines request BIAS_PULL_UP from libgpiod regardless of
+    // the module's own resistors - it costs nothing and tolerates a module whose
+    // pull-ups are absent.
+    map.buttonLines[static_cast<std::size_t>(core::ButtonId::EncoderPush)] = 22;  // SW
+    map.encoderLineA = 17;                                                        // CLK
+    map.encoderLineB = 27;                                                        // DT
+    map.encoderPowerLine = -1;  // + wired to the 3.3 V pin (pin 1), not a GPIO.
     return map;
 }
 

@@ -9,6 +9,8 @@
 #include "aw/platform/desktop/VirtualPanel.hpp"
 #include "aw/platform/linux/EvdevTouch.hpp"
 #include "aw/platform/linux/FramebufferDisplay.hpp"
+#include "aw/platform/linux/SpiOledBus.hpp"
+#include "aw/platform/oled/Ssd1306Display.hpp"
 
 namespace aw::platform::desktop {
 namespace {
@@ -60,18 +62,68 @@ DevBackendOptions optionsFromEnvironment() {
     options.framebufferDevice = environmentOr("AW_FB_DEVICE", "/dev/fb0");
     options.touchDevice = environmentOr("AW_TOUCH_DEVICE", "");
     options.stretch = environmentOr("AW_STRETCH", "0") == "1";
+
+    options.oledSpiDevice = environmentOr("AW_OLED_SPI", "/dev/spidev0.0");
+    options.oledController = environmentOr("AW_OLED_CHIP", "ssd1306");
+    options.oledUpsideDown = environmentOr("AW_OLED_ROTATE", "0") == "180";
     return options;
 }
+
+namespace {
+
+/// Builds the OLED display if it is wanted and the SPI bus opens.  Returns null
+/// (and leaves `description` untouched) otherwise, so the caller falls through
+/// to the next display option - exactly like the framebuffer branch.
+std::unique_ptr<hal::DisplayInterface> tryOled(const DevBackendOptions& options,
+                                               std::string& description) {
+    // Explicit only: an OLED cannot be probed over its write-only SPI link, and
+    // /dev/spidev0.0 exists on any SPI-enabled Pi whether or not a panel is
+    // attached. So "auto" must never silently pick it over a detectable HDMI panel.
+    if (options.display.find("oled") == std::string::npos) {
+        return nullptr;
+    }
+    if (!linuxfb::SpiOledBus::isAvailable(options.oledSpiDevice)) {
+        return nullptr;  // No /dev/spidevN.N - SPI not enabled, or not a Pi.
+    }
+
+    auto bus = std::make_unique<linuxfb::SpiOledBus>(linuxfb::SpiOledConfig{options.oledSpiDevice});
+    if (auto status = bus->openBus(); !status) {
+        return nullptr;  // Present but unusable; a warning is logged by the app.
+    }
+
+    oled::OledConfig config;
+    config.width = options.oledWidth;
+    config.height = options.oledHeight;
+    config.controller = options.oledController == "sh1106" ? oled::Controller::Sh1106
+                                                           : oled::Controller::Ssd1306;
+    config.rotation = options.oledUpsideDown ? oled::Rotation::UpsideDown : oled::Rotation::Normal;
+
+    description = "OLED " + std::to_string(options.oledWidth) + "x" +
+                 std::to_string(options.oledHeight) + " (" + options.oledController + ")";
+    return std::make_unique<oled::Ssd1306Display>(config, std::move(bus));
+}
+
+}  // namespace
 
 DevBackends createDevBackends(const DevBackendOptions& options) {
     DevBackends backends;
     auto buttons = std::make_unique<CompositeButtons>();
 
+    // The OLED is tried first: it is an explicit choice (small monochrome
+    // panel), so when the user asks for it and it is present, nothing should
+    // silently prefer a different screen.
+    if (auto display = tryOled(options, backends.description)) {
+        backends.display = std::move(display);
+    }
+
     const bool framebufferUsable =
+        !backends.display &&
         wants(options.display, "fb") &&
         linuxfb::FramebufferDisplay::isAvailable(options.framebufferDevice);
 
-    if (framebufferUsable) {
+    if (backends.display) {
+        // Already chosen (OLED). Nothing to do here.
+    } else if (framebufferUsable) {
         // Build the layout once, from the real panel geometry, and give the same
         // value to the display and the touch backend.
         const auto panel = linuxfb::FramebufferDisplay::queryPanelSize(options.framebufferDevice);

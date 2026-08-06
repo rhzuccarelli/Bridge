@@ -20,13 +20,19 @@ Throughout, commands are labelled so you always know where to type them:
 | **27 W USB-C power supply** | ⚠️ Use the official one. A phone charger causes random freezes that look like software bugs and will waste your evening. |
 | microSD card, 32 GB+, class A2 | The card is the Pi's hard drive. |
 | microSD reader for your Mac | Many Macs have no SD slot — check before you start. |
-| **micro-HDMI → HDMI cable or adapter** | ⚠️ The Pi 5 has two *micro*-HDMI ports, not full size. Your 3.5" LCD has a full-size plug. This adapter is the single most commonly forgotten part. |
-| Your 3.5" HDMI LCD | |
+| **SPI OLED, 128×64 (SSD1306/SH1106)** + 7 jumper wires | The prototype's display. Small monochrome screen, wired with jumpers. |
 | KY-040 rotary encoder + 5 jumper wires | Female-to-female, to go from the module to the Pi's pins. |
 | Wi-Fi network name and password | Or an Ethernet cable, which is simpler. |
 
 You do **not** need a keyboard or a monitor for the Pi. Everything is done from your
 Mac over the network.
+
+> **Why the little OLED and not the 3.5" HDMI LCD?** The HDMI LCD is a HAT that
+> sits on the Pi's pin header and covers the pins the encoder needs, so the two
+> can't be used together without an extra part (a stacking header). The OLED is
+> wired with a few jumper wires and leaves the header free, so the screen and the
+> encoder both fit. The trade is that it's small and monochrome. If you'd rather
+> use the HDMI LCD, see [hardware.md](hardware.md) — but this guide uses the OLED.
 
 ---
 
@@ -82,20 +88,21 @@ about 5 minutes.
 With the Pi **unplugged from power**:
 
 1. Insert the microSD card into the slot on the underside of the Pi.
-2. Connect the LCD to the Pi's **micro-HDMI port nearest the USB-C power socket**
-   (that one is `HDMI-A-1`, which the software expects).
-3. If your LCD needs USB power, plug its USB lead into one of the Pi's USB ports.
-4. *Leave the encoder for now* — Step 10.
-5. Plug in the USB-C power supply.
+2. *Leave the OLED and encoder for now* — you'll wire them in Step 10, after the
+   software is running and you can test them.
+3. Plug in the USB-C power supply.
 
 The Pi has no power switch; it starts when power is connected. The green LED will
 flicker as it reads the card.
 
+> For these first boots you have no screen attached yet — that's fine, everything
+> is done over the network from your Mac. You'll wire the OLED in Step 10.
+
 **First boot takes 2–3 minutes** — it resizes the filesystem and reboots itself once.
 Be patient.
 
-**✅ Check:** the LCD shows text scrolling past, ending at a `audiopi login:` prompt.
-If the screen stays black, see [Troubleshooting](#troubleshooting).
+**✅ Check:** the green activity LED on the Pi flickers for a couple of minutes and
+then mostly settles. You'll confirm it's really up in the next step, from your Mac.
 
 ---
 
@@ -244,29 +251,19 @@ The Pi 5 compiles the whole project in well under a minute.
 
 ---
 
-## Step 9 — Run it
+## Step 9 — Run it (no screen yet)
+
+You haven't wired the OLED yet — that's next — so run it in your SSH window, which
+needs no hardware at all:
 
 🍓 **On the Pi:**
-
-```bash
-./scripts/run-pi.sh
-```
-
-**✅ Check:** the log says `development platform ready: framebuffer /dev/fb0 ...`
-and the LCD goes dark with a row of outlined boxes along the bottom — the virtual
-buttons. Press `q` or `Ctrl-C` to quit.
-
-> The screens are intentionally blank: drawing them is Phase 7. What you are
-> confirming now is that the display, input and audio plumbing all work.
-
-### If you would rather see it in your SSH window
 
 ```bash
 ./scripts/run-pi.sh --terminal
 ```
 
-This renders the *real* framebuffer as coloured blocks in your terminal, and you can
-drive everything from your Mac's keyboard:
+**✅ Check:** the log says `development platform ready: terminal preview ...`, and
+you can drive everything from your Mac's keyboard:
 
 | Key | | Key | |
 | --- | --- | --- | --- |
@@ -276,127 +273,141 @@ drive everything from your Mac's keyboard:
 | `i` / `e` | Import / Export | `b` or `Esc` | Back |
 | `u` / `w` | Undo / Save | `q` | Quit |
 
-### Checking the screen resolution
+> The screens are intentionally blank: drawing them is Phase 7. What you're
+> confirming now is that the input and audio plumbing work. In your terminal you'll
+> see a dark rectangle — that's the (empty) 320×240 canvas being previewed.
 
-🍓 If the LCD image looks wrong:
-
-```bash
-fbset -s | grep geometry
-```
-
-You want `480 320`. If it differs, see the display section of
-[hardware.md](hardware.md) — the fix is one line in `/boot/firmware/cmdline.txt`.
-
-> ⚠️ Ignore any guide telling you to set `hdmi_group` / `hdmi_mode` / `hdmi_cvt` in
-> `config.txt`. Those do nothing on a Pi 5.
+Press `q` to quit. Now let's give it a real screen.
 
 ---
 
-## Step 10 — Wire up the rotary encoder
+## Step 10 — Wire up the OLED and the encoder
 
-**Unplug the Pi's power first.**
+**Unplug the Pi's power first.** Never move jumper wires on a powered Pi.
 
-Your LCD HAT covers header pins 1–26, so everything goes into the **exposed tail at
-the far end** — pins 27 to 40.
+Because the OLED is wired with jumpers instead of sitting on the header, both it
+and the encoder fit comfortably. Here's the whole picture.
 
-### Finding the pins
+### Finding pins on the header
 
-The header has 40 pins in two rows of 20. Odd numbers (1, 3, 5 …) are one row, even
-numbers (2, 4, 6 …) the other. The HAT covers the first 13 pairs; you want the
-exposed ones past it.
+The 40 pins are two rows of 20. **Odd** numbers (1, 3, 5…) are the row nearest the
+edge of the board; **even** numbers (2, 4, 6…) are the inner row. Pin 1 is the
+corner nearest the microSD/USB-C end — it usually has a square solder pad on the
+underside.
 
-**The easiest way to count is backwards from the end.** In the odd row, the very
-last pin is 39, then working back: 37, 35, 33, 31, 29.
+### The OLED (7 wires)
 
-```
-   ... [HAT covers up to here] |  29   31   33   35   37   39   <- odd row (last pin)
-                               |  30   32   34   36   38   40   <- even row
-```
-
-### The connections
-
-| KY-040 pin | Pi pin | Counting from the end of the odd row |
+| OLED pin | Pi pin | What it is |
 | --- | --- | --- |
-| `CLK` | pin 29 | 6th from the end |
-| `DT` | pin 31 | 5th from the end |
-| `SW` | pin 33 | 4th from the end |
-| `+` | pin 37 | 2nd from the end |
-| `GND` | pin 39 | **last pin** |
+| `GND` | pin 20 | ground |
+| `VCC` | pin 17 | **3.3 V** |
+| `SCK` | pin 23 | SPI clock |
+| `SDA` | pin 19 | SPI data |
+| `RES` | pin 22 | reset |
+| `DC`  | pin 18 | data/command |
+| `CS`  | pin 24 | chip select |
 
-All five wires go into the same row. **Skip pin 35** (the 3rd from the end) — it is
-left free for a future audio codec.
+### The encoder (5 wires)
 
-> ⚠️ **Never use pins 2 or 4.** Those are 5 V, and the Pi's GPIO is not 5 V
-> tolerant — a KY-040 powered from 5 V feeds 5 V back into the signal pins and can
-> permanently kill the board.
+| KY-040 pin | Pi pin | What it is |
+| --- | --- | --- |
+| `+`   | pin 1 | **3.3 V** |
+| `GND` | pin 9 | ground |
+| `CLK` | pin 11 | GPIO 17 |
+| `DT`  | pin 13 | GPIO 27 |
+| `SW`  | pin 15 | GPIO 22 |
 
-### "Wait, isn't `+` supposed to be a power pin?"
+> ⚠️ **Both `VCC` and `+` go to 3.3 V pins (17 and 1), never 5 V.** The Pi's GPIO
+> and these modules are 3.3 V; 5 V can permanently damage the board. Pins 2 and 4
+> are the 5 V pins — keep clear of them.
 
-Yes — and both of the Pi's 3.3 V pins are underneath your HAT. So instead, the
-software switches **pin 37 on** and uses it as a small power supply. The encoder
-draws about 1 mA; a Pi pin can supply 16 mA. It is well within spec.
+None of these pins overlap, so you can wire both modules and power up.
 
-You might be wondering why we do not just leave `+` unconnected. It seems like it
-should work, but it does not: the encoder's internal resistors all share that pin,
-so closing one contact drags the other two signals to about 1.2 V — which is
-neither a clean "high" nor a clean "low". The result is an encoder that *mostly*
-works and randomly misses or doubles steps. Much better to supply it properly.
+### Enable SPI (the OLED needs it)
 
-Power back up, then 🍓:
-
-```bash
-gpiodetect
-```
-
-Note which chip reports **54 lines** — that is the 40-pin header. On a Pi 5 it may be
-`gpiochip0` or `gpiochip4` depending on your kernel version. If it is not
-`gpiochip0`, run the app like this:
+Power back up, SSH in, and turn on the SPI bus the OLED talks over:
 
 ```bash
-AW_GPIO_CHIP=gpiochip4 ./scripts/run-pi.sh
+sudo raspi-config nonint do_spi 0
+sudo reboot
 ```
 
-### Test the wiring right now
-
-The app cannot use the encoder yet (its driver is Phase 6), but you can prove the
-wiring is right today with the command-line tools. Worth doing — finding a swapped
-wire now is much easier than debugging it later.
-
-🍓 Open **two** SSH sessions to the Pi (just run `ssh pi@audiopi.local` twice on
-your Mac).
-
-**In session 1**, switch the encoder's power pin on and leave it running:
+After it reboots, SSH back in and confirm:
 
 ```bash
-gpioset --mode=wait gpiochip0 26=1
+ls /dev/spidev0.0        # should exist
 ```
 
-Nothing prints — that is correct. It is holding pin 37 high. Leave this window
-alone.
+### Prove the OLED works
 
-**In session 2**, watch the CLK line while you turn the knob:
+🍓 There's a dedicated bring-up tool that draws a test pattern — no UI or font
+needed:
 
 ```bash
-gpiomon --falling-edge gpiochip0 5
+cd ~/audio-workstation
+./build/src/platform/aw-oled-test
 ```
 
-**✅ Check:** turning the knob prints a line per click. Press `Ctrl-C`, then repeat
-for `6` (DT) and `13` (SW — this one responds to *pressing* the knob, not turning).
+**✅ Check:** the OLED lights up with a **border, a diagonal line, and a small
+filled square in the top-left corner**. Press `Ctrl-C` to exit.
 
-If all three respond, your wiring is correct and Phase 6 will just work.
+| What you see | What it means |
+| --- | --- |
+| The pattern above | 🎉 Wiring, power and controller all correct. |
+| Nothing at all | Check `VCC`/`GND`, re-seat the jumpers, confirm SPI is enabled and you're in the `spi`/`gpio` groups (Step 7). |
+| Image shifted right or split in two | Your chip is an **SH1106**, not SSD1306. Run `./build/src/platform/aw-oled-test sh1106`. |
+| Upside down or mirrored | Run `AW_OLED_ROTATE=180 ./build/src/platform/aw-oled-test`. |
 
-> **Nothing prints?** Check `gpioset` is still running in session 1 — if you closed
-> it, the encoder lost power. Also confirm the chip name from `gpiodetect` and
-> substitute it in both commands.
+**Write down** whether you needed `sh1106` and/or `180` — you'll pass the matching
+options to the app.
+
+### Prove the encoder works
+
+The encoder's own driver is Phase 6, but you can confirm the wiring now with the
+command-line tools. `+` is on a real 3.3 V pin, so there's no power trick — just
+watch the lines while you turn the knob:
+
+```bash
+gpiomon --falling-edge gpiochip0 17     # CLK — turning the knob prints a line per click
+```
+
+Press `Ctrl-C`, then repeat for `27` (DT, also turning) and `22` (SW, responds to
+*pressing* the knob).
+
+**✅ Check:** all three print something. If so, Phase 6 will just work.
+
+> **Which gpiochip?** On a Pi 5 the header is `gpiochip0` on current kernels but
+> `gpiochip4` on older ones. Run `gpiodetect` and use whichever reports **54
+> lines**; substitute it in the commands above and pass `AW_GPIO_CHIP=gpiochipN`
+> to the app.
 >
-> **`gpioset: invalid option`?** You have libgpiod v2, which changed the syntax.
-> Use `gpioset -t0 gpiochip0 26=1` and `gpiomon -e falling gpiochip0 5`.
+> **`gpiomon: invalid option`?** You have libgpiod v2, which changed the syntax:
+> `gpiomon -e falling gpiochip0 17`.
 
-When you are done, press `Ctrl-C` in both windows.
+### Run the app on the OLED
+
+🍓 Now run for real, on the little screen:
+
+```bash
+./scripts/run-pi.sh --oled
+```
+
+Add the options you noted, if any:
+
+```bash
+AW_OLED_CHIP=sh1106 AW_OLED_ROTATE=180 ./scripts/run-pi.sh --oled
+```
+
+**✅ Check:** the log says `development platform ready: OLED 128x64 ...`. The screen
+will be mostly blank — the real screens are Phase 7 — but the display path is now
+proven end to end on hardware.
 
 ---
 
-## Step 11 — Enable the touchscreen (optional)
+## Step 11 — Enable the touchscreen (only if using the HDMI LCD)
+
+**Skip this if you're using the OLED** — it has no touchscreen, and you're done at
+Step 10. This step is only for the alternative 3.5" HDMI LCD with XPT2046 touch.
 
 The XPT2046 touch panel needs a kernel driver switched on.
 
@@ -502,10 +513,12 @@ To just deploy without running:
 
 ## Troubleshooting
 
-**The LCD stays black.**
-Check the micro-HDMI is in the port *nearest the USB-C socket*. Confirm the Pi is
-actually running: `ping audiopi.local` from your Mac. If ping works but the screen is
-black, the panel is not being detected — try the other micro-HDMI port and reboot.
+**The OLED stays black.**
+Run the bring-up tool (`./build/src/platform/aw-oled-test`) — it's the fastest way
+to isolate the problem. Nothing at all usually means power (`VCC` to pin 17,
+`GND` to pin 20) or a loose jumper; re-seat all seven. Confirm SPI is on
+(`ls /dev/spidev0.0`) and you're in the `spi` and `gpio` groups (`groups`). A
+shifted or split image means it's an SH1106 — add `sh1106` to the command.
 
 **`ssh: Could not resolve hostname audiopi.local`**
 The Pi is not on the network. Wait two minutes after powering on. Check the Wi-Fi
@@ -517,18 +530,16 @@ look for the Pi's IP in your router's device list and use that directly:
 Wrong username or password. The username is whatever you set in Imager, not
 necessarily `pi`. If you are stuck, reflash the card — it takes 5 minutes.
 
-**The app says `development platform ready: headless`.**
-It could not open `/dev/fb0`. Almost always the groups step:
+**The app says `development platform ready: headless` when you asked for `--oled`.**
+It couldn't open the OLED. Confirm SPI is enabled (`ls /dev/spidev0.0`), that the
+bring-up tool works (`aw-oled-test`), and that you're in the `spi` and `gpio`
+groups (`groups`). If groups are missing, run `./scripts/setup-pi.sh` again and
+**log out and back in**. Meanwhile `--terminal` always works over SSH.
 
-```bash
-groups                # do you see 'video'?
-```
-
-If not, run `./scripts/setup-pi.sh` again, then **log out and back in**.
-
-**`no /dev/input/event*` or touch does nothing.**
-Step 11 not done, or `penirq` is wrong for your panel. Everything else works fine
-without touch — use `--terminal` and the keyboard meanwhile.
+**`no /dev/input/event*` or touch does nothing (HDMI LCD only).**
+Step 11 not done, or `penirq` is wrong for your panel. The OLED has no touch — this
+only applies to the HDMI LCD. Everything works fine without it — use `--terminal`
+and the keyboard, or the encoder.
 
 **Random freezes, reboots, or a lightning-bolt icon on screen.**
 Underpowered. Use a genuine 27 W USB-C supply. Confirm with:

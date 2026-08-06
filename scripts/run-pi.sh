@@ -3,9 +3,10 @@
 # Launch the workstation with sensible settings for the prototype.
 #
 # Run it ON THE PI:
-#     ./scripts/run-pi.sh              # LCD + touch strip + keyboard
+#     ./scripts/run-pi.sh              # auto-detect display + keyboard
+#     ./scripts/run-pi.sh --oled       # SPI OLED (SSD1306/SH1106) + encoder
 #     ./scripts/run-pi.sh --terminal   # preview in your SSH terminal instead
-#     ./scripts/run-pi.sh --headless    # no display at all
+#     ./scripts/run-pi.sh --headless   # no display at all
 #
 set -euo pipefail
 
@@ -23,6 +24,7 @@ mkdir -p "$AW_PROJECTS_ROOT"
 case "${1:-}" in
     --terminal) export AW_DISPLAY=terminal ;;
     --headless) export AW_DISPLAY=memory; export AW_INPUT=none ;;
+    --oled)     export AW_DISPLAY=oled ;;
     "")         export AW_DISPLAY="${AW_DISPLAY:-auto}" ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
 esac
