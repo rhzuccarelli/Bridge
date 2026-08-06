@@ -11,7 +11,7 @@ namespace aw::platform::desktop {
 
 /// Which backends to prefer.  "auto" picks the best thing actually present.
 struct DevBackendOptions {
-    std::string display{"auto"};    ///< auto | fb | terminal | memory
+    std::string display{"auto"};    ///< auto | oled | fb | terminal | memory
     std::string input{"auto"};      ///< auto | touch | keyboard | none  (comma separated)
     std::string framebufferDevice{"/dev/fb0"};
     std::string touchDevice;        ///< Empty scans /dev/input/event*.
@@ -20,6 +20,13 @@ struct DevBackendOptions {
     bool stretch{false};
     std::uint16_t fallbackPanelWidth{480};   ///< Used when the panel cannot be queried.
     std::uint16_t fallbackPanelHeight{320};
+
+    // SPI OLED (SSD1306 / SH1106). Only consulted when the OLED is selected.
+    std::string oledSpiDevice{"/dev/spidev0.0"};
+    std::string oledController{"ssd1306"};   ///< ssd1306 | sh1106
+    std::uint16_t oledWidth{128};
+    std::uint16_t oledHeight{64};
+    bool oledUpsideDown{false};
 };
 
 /// Reads the options from the environment:

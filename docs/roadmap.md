@@ -14,16 +14,24 @@ architectural decision is written down in `docs/architecture.md`.
 Real display and input for the bench hardware, so every later phase gets visual
 feedback on the actual device as it lands rather than at the end.
 
-- `FramebufferDisplay` — the 3.5" HDMI LCD via `/dev/fb0`, 16 and 32 bpp, with
-  the 320×240 logical canvas letterboxed inside the 480×320 panel.
+- `Ssd1306Display` + `SpiOledBus` — 128×64 monochrome SPI OLED (SSD1306/SH1106),
+  the prototype's primary display. RGB565 thresholded to 1bpp and packed into
+  page RAM; real spidev + GPIO-chardev transport using only kernel uapi headers,
+  no libgpiod. `aw-oled-test` proves wiring before any UI exists.
+- `FramebufferDisplay` — the 3.5" HDMI LCD via `/dev/fb0` (the alternative
+  display), 16 and 32 bpp, 320×240 canvas letterboxed inside 480×320.
 - `EvdevTouch` — XPT2046 through the kernel, hit-testing a virtual key strip and
-  emitting ordinary `ButtonId`s. Touch never reaches the UI.
+  emitting ordinary `ButtonId`s. Touch never reaches the UI. (HDMI LCD only.)
 - `TerminalDisplay` / `KeyboardInput` — ANSI truecolour preview and key control,
   for working over SSH with no hardware at all.
 - `CompositeButtons` — merges GPIO, touch and keyboard into one event stream.
 
 See `docs/hardware.md` for wiring and setup. The KY-040 encoder itself is still
 Phase 6 (it needs libgpiod); its pin map and decoding requirements are recorded.
+
+> Note: the OLED is 128×64 monochrome, which diverges from the 320×240 colour
+> ESP32-P4 target — Phase 7 will design a minimal UI for it. Chosen because it
+> frees the GPIO header for the encoder, which the pin-hungry HDMI HAT does not.
 
 ## Phase 2 — WAV support
 

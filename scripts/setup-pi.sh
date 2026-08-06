@@ -84,11 +84,29 @@ PROJECTS_ROOT="${AW_PROJECTS_ROOT:-$HOME/audio-projects}"
 mkdir -p "$PROJECTS_ROOT"
 ok "$PROJECTS_ROOT"
 
+say "Enabling the SPI bus (for the OLED display)"
+if command -v raspi-config >/dev/null; then
+    if [[ -e /dev/spidev0.0 ]]; then
+        ok "SPI already enabled (/dev/spidev0.0)"
+    else
+        sudo raspi-config nonint do_spi 0 && ok "SPI enabled (reboot to take effect)"
+        NEEDS_LOGOUT=1
+    fi
+else
+    warn "raspi-config not found - enable SPI by adding 'dtparam=spi=on' to config.txt"
+fi
+
 say "Hardware check"
+if [[ -e /dev/spidev0.0 ]]; then
+    ok "SPI present: /dev/spidev0.0 (OLED can be used)"
+else
+    warn "no /dev/spidev0.0 yet - reboot after this script for the OLED"
+fi
+
 if [[ -e /dev/fb0 ]]; then
     ok "framebuffer present: $(fbset -s 2>/dev/null | awk '/geometry/ {print $2"x"$3", "$6" bpp"}' || echo '/dev/fb0')"
 else
-    warn "no /dev/fb0 - is the HDMI display plugged in? (needs a micro-HDMI cable on a Pi 5)"
+    warn "no /dev/fb0 - only relevant if you use the HDMI LCD instead of the OLED"
 fi
 
 if ls /dev/input/event* >/dev/null 2>&1; then

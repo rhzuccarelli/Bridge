@@ -5,11 +5,127 @@ The bench prototype, and how the software talks to each piece.
 | Part | Connection | Backend |
 | --- | --- | --- |
 | Raspberry Pi 5 | — | — |
-| 3.5" HDMI LCD, 480×320, XPT2046 touch | HDMI + SPI touch | `FramebufferDisplay` + `EvdevTouch` |
+| **SPI OLED, 128×64 mono (SSD1306/SH1106)** | SPI + 2 GPIO | `Ssd1306Display` + `SpiOledBus` |
 | KY-040 rotary encoder with push switch | GPIO | `GpioEncoder` + `GpioButtons` *(Phase 6)* |
 | microSD | — | `PosixStorage` |
 | USB audio interface or codec | USB / I²S | `AlsaAudioOutput` *(Phase 5)* |
 | Teenage Engineering TP-7 | USB (MTP) | `LibUsbHost` + `LibMtpDevice` *(Phase 8)* |
+| *(alternative)* 3.5" HDMI LCD, 480×320, XPT2046 touch | HDMI + SPI touch | `FramebufferDisplay` + `EvdevTouch` |
+
+> **Two display options, one reason to prefer the OLED on the prototype.** The
+> 3.5" HDMI LCD is a HAT that sits on header pins 1–26 — which are exactly the
+> pins the encoder needs, so the two cannot coexist without a stacking header.
+> The SPI OLED is wired with a handful of jumpers and leaves the rest of the
+> header free, so the OLED **and** the encoder fit on a bare board. The cost is
+> that it is small and monochrome (see below). Both are real backends behind the
+> same `DisplayInterface`; switch with `AW_DISPLAY`.
+
+---
+
+## Display — SPI OLED (SSD1306 / SH1106)
+
+A 128×64 monochrome OLED on a 7-pin SPI breakout (`GND VCC SCK SDA RES DC CS`).
+It is the prototype's primary display because it frees the GPIO header for the
+encoder.
+
+### What it is, and what that costs
+
+128×64 is **1/40th the pixels** of the 320×240 target panel, and it is one bit
+per pixel — no colour. The `Ssd1306Display` backend still implements the same
+`DisplayInterface` as the colour panels: the UI renders into its normal RGB565
+framebuffer, and the backend thresholds each pixel to on/off and packs it into
+the controller's page RAM. So nothing above the HAL changes — but the Phase 7
+screens will be designed for a small monochrome canvas (transport state,
+timecode, level bars, a short list), closer to a Tascam's display than the
+four-lane colour layout the 320×240 panel allows.
+
+> ⚠️ This diverges from the stated ESP32-P4 product target (320×240 colour). A
+> UI laid out for 128×64 will need rework for the final panel. That is an
+> accepted trade for getting the encoder and a screen working together on the
+> bench today.
+
+### Confirmed board
+
+The prototype's module is silkscreened **`0.96"OLED4SPI Ver:1.2`**, pins in the
+order `GND VCC SCK SDA RES DC CS`. That is a 128×64 **SSD1306** — the defaults
+(`AW_OLED_CHIP=ssd1306`, 128×64) are correct for it, so no chip flag is needed;
+only orientation (`AW_OLED_ROTATE`) might, depending on how it is mounted.
+
+### Wiring
+
+Chosen to sit clear of the encoder (GPIO 17/27/22), using hardware SPI0. The pin
+order below matches this module's labels left-to-right:
+
+| OLED pin | Pi pin | BCM | Note |
+| --- | --- | --- | --- |
+| `GND` | pin 20 | — | |
+| `VCC` | pin 17 | — | **3.3 V** |
+| `SCK` | pin 23 | GPIO 11 | SPI0 SCLK |
+| `SDA` | pin 19 | GPIO 10 | SPI0 MOSI |
+| `RES` | pin 22 | GPIO 25 | reset |
+| `DC`  | pin 18 | GPIO 24 | data/command |
+| `CS`  | pin 24 | GPIO 8 | SPI0 CE0 — the spidev driver toggles it |
+
+`VCC` is **3.3 V** (pin 17), not 5 V. These modules run at 3.3 V and the SPI
+lines must not exceed it.
+
+### Setup
+
+Enable SPI, then reboot:
+
+```bash
+sudo raspi-config nonint do_spi 0     # or: add 'dtparam=spi=on' to config.txt
+sudo reboot
+```
+
+Confirm `/dev/spidev0.0` exists and you are in the groups:
+
+```bash
+ls /dev/spidev0.0
+groups | grep -o 'spi\|gpio'          # need both
+```
+
+### Bring-up
+
+Before any UI exists, prove the panel with the test tool:
+
+```bash
+./build/src/platform/aw-oled-test
+```
+
+You should see a 1-pixel border, a diagonal, and a filled block in the top-left
+corner. If not:
+
+| Symptom | Fix |
+| --- | --- |
+| Nothing at all | Check power and wiring; confirm `spi`/`gpio` group membership. |
+| Image shifted right / split | It's an SH1106, not an SSD1306: `./build/src/platform/aw-oled-test sh1106` |
+| Upside down or mirrored | `AW_OLED_ROTATE=180 ./build/src/platform/aw-oled-test` |
+
+Once the pattern is correct, note whether you needed `sh1106` / `180`, and pass
+the matching env vars when running the app.
+
+### How the backend works
+
+- **No external library.** `SpiOledBus` talks to `/dev/spidev0.0` and the GPIO
+  character device (`/dev/gpiochipN`) using only kernel uapi headers — no
+  libgpiod, no wiringPi, nothing to install.
+- **CS is left to spidev.** The driver asserts CE0 around each write, so the
+  code only manages `DC` (per transfer) and `RES` (pulsed once at init).
+- **Page-addressed flush.** The whole 1 KiB buffer is pushed one page at a time,
+  which works identically on the SSD1306 and the SH1106 (the latter has no
+  horizontal-addressing mode). At 8 MHz a full frame is well under a
+  millisecond, so there is no damage-tracking — every `present()` pushes the lot.
+- **`setBacklight` maps to contrast.** An OLED has no backlight, but the contrast
+  register is the honest nearest thing.
+
+### Config (environment variables)
+
+| Variable | Values | Meaning |
+| --- | --- | --- |
+| `AW_OLED_CHIP` | `ssd1306` `sh1106` | Controller. Default `ssd1306`. |
+| `AW_OLED_ROTATE` | `0` `180` | Orientation. |
+| `AW_OLED_SPI` | path | Default `/dev/spidev0.0`. |
 
 ---
 
@@ -121,32 +237,65 @@ The strip is two rows of six:
 ## Encoder — KY-040
 
 The **primary navigation control**, and the one prototype part that is exactly
-what the shipping device will use. Wiring (BCM numbering):
+what the shipping device will use.
+
+Because the display is now the jumper-wired SPI OLED rather than the pin-hungry
+LCD HAT, the header is free and the encoder uses its clean original wiring near
+the start of the header:
+
+### Wiring
 
 | KY-040 | Pi pin | BCM |
 | --- | --- | --- |
-| `+`   | pin 1 — **3.3 V** | — |
-| `GND` | pin 6 | — |
+| `+`   | pin 1 | — (**3.3 V**) |
+| `GND` | pin 9 | — |
 | `CLK` | pin 11 | 17 |
 | `DT`  | pin 13 | 27 |
 | `SW`  | pin 15 | 22 |
 
-Which gpiochip carries the header moved between kernel releases: on a Pi 5 the
-pins sit behind the RP1 southbridge, exposed as `gpiochip4` by older Bookworm
-kernels and `gpiochip0` by newer ones. Run `gpiodetect` and use whichever
-reports **54 lines**; override the default with `AW_GPIO_CHIP=gpiochipN`.
+`+` goes to a real 3.3 V pin, so `GpioPinMap::encoderPowerLine` is left at `-1`
+(no GPIO used for power).
 
-⚠️ **`+` goes to 3.3 V, not 5 V.** The Pi's GPIO is not 5 V tolerant, and a
-KY-040 powered from 5 V will put 5 V on CLK/DT/SW.
+> ⚠️ **`+` is 3.3 V (pin 1), not 5 V.** The Pi's GPIO is not 5 V tolerant, and a
+> KY-040 powered from 5 V puts 5 V onto CLK/DT/SW and can permanently damage the
+> board. Pin 1 is 3.3 V; pin 2 directly beside it is 5 V — do not confuse them.
 
-Notes for the Phase 6 implementation:
+This layout is only reachable because the header is not covered by a HAT. It does
+**not** work with the 3.5" LCD HAT installed — that HAT buries pins 1–26. If you
+ever go back to the HAT, either lift it on a **40-pin stacking header** (which
+exposes the whole header) or move the encoder to the exposed pin-29–39 tail and
+power `+` from a driven-high GPIO; the project history has that arrangement,
+and `GpioPinMap::encoderPowerLine` exists to support it.
 
-- All three lines need pull-ups. The module's own resistors are unreliable, so
-  the driver requests `BIAS_PULL_UP` from libgpiod rather than trusting the
-  board.
+### Why powering `+` from a GPIO is a valid trick (for the HAT case)
+
+Worth recording, since it is not obvious. If the header *is* covered and only the
+tail is exposed, there is no 3.3 V pin left — and leaving `+` disconnected to
+rely on the Pi's internal pull-ups **does not work on a KY-040**. Its three 10 kΩ
+pull-ups share the `+` node, so with that node floating, closing the CLK contact
+drags DT and SW to roughly **1.24 V** — between the logic-low (0.8 V) and
+logic-high (1.6 V) thresholds. The result is an encoder that intermittently
+misses and doubles steps: a nasty, flaky-looking fault. Driving a spare GPIO high
+instead supplies a genuine 3.3 V at ~1 mA, well within a pin's 16 mA budget.
+
+### Which gpiochip
+
+The chip carrying the header moved between kernel releases: on a Pi 5 the pins sit
+behind the RP1 southbridge, exposed as `gpiochip4` by older Bookworm kernels and
+`gpiochip0` by newer ones. Run `gpiodetect` and use whichever reports **54 lines**;
+override the default with `AW_GPIO_CHIP=gpiochipN`.
+
+### Notes for the Phase 6 implementation
+
+- The power line must be requested as an output and driven high **before** the
+  encoder lines are read, and the request held open — releasing it drops the
+  supply.
+- All three signal lines still request `BIAS_PULL_UP`. It costs nothing and makes
+  the wiring tolerant of a module with missing resistors, or of the power line not
+  having come up yet.
 - KY-040s are notoriously bouncy. Decoding is a quadrature state machine with
-  debounce, coalescing the four transitions per detent into **one** reported
-  step — so one physical click always moves the UI by exactly one row.
+  debounce, coalescing the four transitions per detent into **one** reported step —
+  so one physical click always moves the UI by exactly one row.
 - `SW` is active-low and is reported as `core::ButtonId::EncoderPush`, i.e. it
   arrives as a *button*, not as part of the encoder interface.
 
@@ -155,19 +304,22 @@ Notes for the Phase 6 implementation:
 ## Mixed input sources
 
 The prototype has a real encoder but no physical buttons yet, so button events
-come from two places at once:
+come from more than one source at once:
 
 ```
 GPIO (KY-040 SW) ──┐
-                   ├──> CompositeButtons ──> ButtonListener ──> events
-Touch strip ───────┤
-Keyboard (SSH) ────┘
+Keyboard (SSH) ────┼──> CompositeButtons ──> ButtonListener ──> events
+Touch strip * ─────┘
 ```
 
 `CompositeButtons` merges any number of `ButtonInterface` sources into one
 stream. A source that fails to start is skipped with a warning rather than being
-fatal — a missing touchscreen must not stop the encoder from working. When real
+fatal — a missing input must not stop the others from working. When real
 switches are wired, they become one more source and nothing else changes.
+
+\* The touch strip only exists with the HDMI panel; the OLED has no touch, so on
+the OLED setup buttons come from the encoder push plus the keyboard until
+physical switches are added.
 
 ---
 
@@ -201,24 +353,34 @@ panel.
 | Variable | Values | Meaning |
 | --- | --- | --- |
 | `AW_PROJECTS_ROOT` | path | Where projects live. |
-| `AW_DISPLAY` | `auto` `fb` `terminal` `memory` | Display backend. |
+| `AW_DISPLAY` | `auto` `oled` `fb` `terminal` `memory` | Display backend. |
 | `AW_INPUT` | `auto` `touch` `keyboard` `none` | Input backends (comma separated). |
+| `AW_OLED_CHIP` | `ssd1306` `sh1106` | OLED controller. Default `ssd1306`. |
+| `AW_OLED_ROTATE` | `0` `180` | OLED orientation. |
+| `AW_OLED_SPI` | path | Default `/dev/spidev0.0`. |
 | `AW_FB_DEVICE` | path | Default `/dev/fb0`. |
 | `AW_TOUCH_DEVICE` | path | Default: scan by capability. |
-| `AW_STRETCH` | `0` `1` | Fill the panel instead of letterboxing. |
+| `AW_STRETCH` | `0` `1` | Fill the HDMI panel instead of letterboxing. |
 
 `auto` degrades gracefully: framebuffer → terminal → headless, and a missing
 touchscreen simply contributes no button source. A development build that
 refuses to start because a peripheral is absent is useless precisely when you
 need it.
 
+**The OLED is never chosen by `auto`.** It cannot be probed over its write-only
+SPI link (`/dev/spidev0.0` exists on any SPI-enabled Pi, panel or not), so it
+must be asked for explicitly with `AW_DISPLAY=oled`.
+
 ### Typical invocations
 
 ```bash
-# On the bench, with the LCD and encoder
-AW_PROJECTS_ROOT=~/projects ./audio-workstation
+# On the bench, with the OLED and the encoder
+AW_DISPLAY=oled AW_PROJECTS_ROOT=~/projects ./audio-workstation
 
-# Over SSH, keyboard driven, with a live preview of the real framebuffer
+# If the OLED is an SH1106 and mounted upside down
+AW_DISPLAY=oled AW_OLED_CHIP=sh1106 AW_OLED_ROTATE=180 ./audio-workstation
+
+# Over SSH, keyboard driven, previewing the UI in the terminal
 AW_DISPLAY=terminal AW_PROJECTS_ROOT=~/projects ./audio-workstation
 
 # CI or a headless box

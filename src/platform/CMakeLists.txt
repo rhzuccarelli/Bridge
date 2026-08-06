@@ -34,7 +34,9 @@ add_library(aw_platform_dev STATIC
     desktop/TerminalDisplay.cpp
     desktop/VirtualPanel.cpp
     linux/EvdevTouch.cpp
-    linux/FramebufferDisplay.cpp)
+    linux/FramebufferDisplay.cpp
+    linux/SpiOledBus.cpp
+    oled/Ssd1306Display.cpp)
 add_library(aw::platform_dev ALIAS aw_platform_dev)
 target_include_directories(aw_platform_dev PUBLIC ${AW_INCLUDE_DIR})
 target_link_libraries(aw_platform_dev
@@ -42,9 +44,14 @@ target_link_libraries(aw_platform_dev
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR
-        "aw_platform_dev needs Linux (framebuffer + evdev). "
+        "aw_platform_dev needs Linux (framebuffer + evdev + spidev). "
         "Build with AW_PLATFORM=simulator and AW_DISPLAY=memory elsewhere.")
 endif()
+
+# Bring-up tool: draws a geometric test pattern on the OLED to prove the wiring,
+# controller choice and orientation before any UI or font exists.
+add_executable(aw-oled-test oled/oled_test_main.cpp)
+target_link_libraries(aw-oled-test PRIVATE aw::platform_dev aw::core aw::hal)
 
 if(AW_PLATFORM STREQUAL "simulator")
 

@@ -28,13 +28,28 @@ GpioPinMap GpioPinMap::prototype() noexcept {
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track2)] = 22;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track3)] = 23;
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::Track4)] = 24;
-    // KY-040: CLK -> encoder A, DT -> encoder B, SW -> the push switch.
-    // All three need pull-ups; the module's own resistors are unreliable, so
-    // Phase 6 requests GPIO_V2_LINE_FLAG_BIAS_PULL_UP from libgpiod rather than
-    // depending on the board.
+    // KY-040, on the original clean assignment near the start of the header:
+    //
+    //   pin 11 / GPIO 17  CLK
+    //   pin 13 / GPIO 27  DT
+    //   pin 15 / GPIO 22  SW
+    //   pin 1             +    (real 3.3 V rail)
+    //   pin 6 or 9        GND
+    //
+    // This layout is only reachable when the 40-pin header is *not* covered by a
+    // pin-hungry HAT - i.e. when the display is a jumper-wired module (the SPI
+    // OLED) or the HAT is lifted on a stacking header.  With the original 3.5"
+    // LCD HAT sitting directly on pins 1-26 these lines are buried, which is why
+    // an earlier revision moved the encoder to the 29-39 tail; see the project
+    // history if that arrangement is ever needed again.
+    //
+    // All three signal lines request BIAS_PULL_UP from libgpiod regardless of
+    // the module's own resistors - it costs nothing and tolerates a module whose
+    // pull-ups are absent.
     map.buttonLines[static_cast<std::size_t>(core::ButtonId::EncoderPush)] = 22;  // SW
     map.encoderLineA = 17;                                                        // CLK
     map.encoderLineB = 27;                                                        // DT
+    map.encoderPowerLine = -1;  // + wired to the 3.3 V pin (pin 1), not a GPIO.
     return map;
 }
 
