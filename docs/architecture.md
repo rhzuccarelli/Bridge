@@ -445,6 +445,14 @@ channel and a width of one or two channels; mono is duplicated onto the stereo o
 Unknown chunks such as the TP-7's `acid` chunk are preserved in the immutable source
 file and safely skipped during streaming.
 
+The realtime stream is source-centric rather than lane-centric. Routes with the same
+file, source range and timeline placement share one `WavReader` and one bounded
+12-channel SPSC ring; each `TrackPlayer` selects its own mono channel or stereo pair
+from those blocks and retains independent gain, pan, mute, solo and meter state. This
+opens a 12-channel TP-7 recording once instead of six times and uses roughly half the
+buffer memory of six duplicated stereo streams. Differently trimmed or positioned
+uses remain separate streams because they require independent read cursors.
+
 `WavReader` walks the RIFF chunk list through `hal::FileHandle`, validates every
 declared range against both the RIFF boundary and physical file size, and converts
 only the caller-requested block into planar float. Unknown chunks are skipped, and

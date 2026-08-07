@@ -77,6 +77,7 @@ aw::core::Result<std::unique_ptr<aw::hal::FileHandle>> MemoryStorage::open(
         if (it == files_.end()) {
             return aw::core::makeError(aw::core::ErrorCode::NotFound, key);
         }
+        ++readOpenCounts_[key];
         return std::unique_ptr<aw::hal::FileHandle>{
             std::make_unique<MemoryFile>(it->second, false)};
     }

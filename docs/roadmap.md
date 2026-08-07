@@ -70,6 +70,8 @@ stays reserved, not implemented.
 The product model now supports multiple decks with exactly one active for playback.
 Inactive decks are source libraries. Clips route a mono channel or adjacent stereo
 pair from an immutable multichannel TP-7 WAV into one of the active deck's six lanes.
+Routes with an identical source range and placement share one multichannel reader and
+bounded ring, so a six-pair TP-7 file is opened and streamed only once.
 
 `Record` uses the confirmed Portastudio model: it arms a track; `Play` begins the
 recording pass. Phase 4 reserves and tests that state transition only. Audio capture

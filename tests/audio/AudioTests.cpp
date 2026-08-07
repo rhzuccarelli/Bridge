@@ -112,6 +112,17 @@ std::vector<std::byte> makeInterleaved24Data(std::span<const float> samples) {
     return data;
 }
 
+std::vector<std::byte> makeRepeatedInterleaved24Data(std::span<const float> frame,
+                                                      std::size_t frameCount) {
+    std::vector<std::byte> data;
+    data.reserve(frame.size() * frameCount * 3U);
+    for (std::size_t index = 0; index < frameCount; ++index) {
+        const auto encoded = makeInterleaved24Data(frame);
+        data.insert(data.end(), encoded.begin(), encoded.end());
+    }
+    return data;
+}
+
 std::vector<std::byte> makeWaveFile(std::vector<std::vector<std::byte>> chunks) {
     std::vector<std::byte> bytes;
     bytes.insert(bytes.end(),
@@ -676,5 +687,47 @@ AW_TEST(AudioEngine, MixesSixSynchronizedStereoTracks) {
     engine.renderAudio(interleaved, 1, 2);
     AW_CHECK(nearlyEqual(interleaved[0], 0.6F));
     AW_CHECK(nearlyEqual(interleaved[1], -0.6F));
+    engine.stop();
+}
+
+AW_TEST(AudioEngine, OpensOneTp7WaveOnceAndDemultiplexesAllSixPairs) {
+    constexpr core::FrameCount kFrames = 700;
+    awtest::MemoryStorage storage;
+    const std::string path = "/projects/Take/audio/TP7-12ch.wav";
+    const std::array<float, 12> frame{0.01F, -0.01F, 0.02F, -0.02F, 0.03F, -0.03F,
+                                      0.04F, -0.04F, 0.05F, -0.05F, 0.06F, -0.06F};
+    storage.addFile(path, makeWaveFile({makeFmtChunk(1, 12, 48000, 24),
+                                        makeChunk("data", makeRepeatedInterleaved24Data(
+                                                              frame, kFrames))}));
+
+    audio::EngineScene scene;
+    for (core::TrackId id = 1; id <= 6; ++id) {
+        audio::EngineTrack track;
+        track.id = id;
+        track.audioFile = path;
+        track.sourceRange = core::FrameRange{0, kFrames};
+        track.sourceChannel = static_cast<core::ChannelCount>((id - 1) * 2);
+        track.sourceChannelCount = 2;
+        scene.tracks.push_back(std::move(track));
+    }
+
+    FakeAudioOutput output;
+    events::EventQueue queue;
+    audio::AudioEngine engine{output, storage, queue};
+    AW_REQUIRE(engine.start(256));
+    AW_REQUIRE(engine.setScene(scene));
+    AW_CHECK_EQ(storage.readOpenCount(path), std::size_t{1});
+    engine.transport().requestPlay();
+
+    std::array<float, 512> interleaved{};
+    for (int block = 0; block < 3; ++block) {
+        engine.renderAudio(interleaved, 256, 2);
+        AW_CHECK(nearlyEqual(interleaved[0], 0.21F));
+        AW_CHECK(nearlyEqual(interleaved[1], -0.21F));
+        if (block < 2) {
+            AW_CHECK(nearlyEqual(interleaved[510], 0.21F));
+            AW_CHECK(nearlyEqual(interleaved[511], -0.21F));
+        }
+    }
     engine.stop();
 }

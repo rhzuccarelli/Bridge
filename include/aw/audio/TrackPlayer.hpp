@@ -22,10 +22,11 @@ struct TrackMixState {
     std::atomic<bool> soloed{false};
 };
 
-/// Streams one track's audio and applies its mix parameters.
+/// Routes one mono/stereo lane from a streamed source and applies mix parameters.
 ///
 /// Phase 4 implements this.  The split that matters: `prefetch()` runs on the
-/// streaming thread and does all the file I/O, filling a ring buffer;
+/// streaming thread and does all the file I/O, filling a ring buffer shared by
+/// every route over the same source placement;
 /// `render()` runs on the audio thread and only ever consumes from that ring.
 /// If the ring runs dry the track outputs silence and flags an underrun - it
 /// never blocks, and one slow track cannot take the whole mix down.
@@ -43,6 +44,12 @@ public:
                                          const core::Path& path,
                                          core::ChannelCount sourceChannel = 0,
                                          core::ChannelCount sourceChannelCount = 2);
+
+    /// Adds another mix route over an already-open stream. Both players consume
+    /// the same multichannel blocks; no second file handle or ring is created.
+    [[nodiscard]] core::Status shareSource(const TrackPlayer& sourceOwner,
+                                            core::ChannelCount sourceChannel,
+                                            core::ChannelCount sourceChannelCount = 2);
 
     void clearSource() noexcept;
     [[nodiscard]] bool hasSource() const noexcept;

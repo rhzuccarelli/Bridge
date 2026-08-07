@@ -37,6 +37,11 @@ public:
         return it == files_.end() ? nullptr : &it->second;
     }
 
+    [[nodiscard]] std::size_t readOpenCount(const Path& path) const {
+        const auto it = readOpenCounts_.find(path.string());
+        return it == readOpenCounts_.end() ? 0U : it->second;
+    }
+
     /// Test helper: make every subsequent write fail with OutOfSpace.
     void setFreeSpace(std::uint64_t bytes) { freeSpace_ = bytes; }
 
@@ -123,6 +128,7 @@ private:
 
     Path projectsRoot_;
     std::map<std::string, std::vector<std::byte>> files_;
+    std::map<std::string, std::size_t> readOpenCounts_;
     std::set<std::string> directories_;
     std::uint64_t freeSpace_{1ULL << 30};
 };

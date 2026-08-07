@@ -53,7 +53,7 @@ struct EngineScene {
 /// depends on it:
 ///
 ///   audio thread      - `renderAudio()`. No allocation, no locks, no I/O.
-///   streaming thread  - reads WAV data ahead into per-track ring buffers.
+///   streaming thread  - reads WAV data ahead into per-source ring buffers.
 ///   control thread    - the main loop. Calls `setScene`, transport methods.
 ///
 /// The engine posts `TransportEvent`, `PositionEvent` and `LevelEvent` into an

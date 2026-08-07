@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <optional>
 #include <thread>
 
 namespace aw::audio {
@@ -20,6 +21,12 @@ struct EngineSceneState {
     core::FrameRange loopRange{};
     bool loopEnabled{false};
 };
+
+bool sameSourcePlacement(const EngineTrack& first, const EngineTrack& second) noexcept {
+    return first.audioFile == second.audioFile && first.startFrame == second.startFrame &&
+           first.sourceRange.start == second.sourceRange.start &&
+           first.sourceRange.length == second.sourceRange.length;
+}
 
 enum class MixCommandKind : std::uint8_t { Gain, Pan, Mute, Solo, MasterGain };
 
@@ -144,22 +151,42 @@ core::Status AudioEngine::setScene(const EngineScene& scene) {
     prepared->loopRange = scene.loopRange;
     prepared->loopEnabled = scene.loopEnabled;
 
-    for (const EngineTrack& track : scene.tracks) {
+    std::vector<std::size_t> sourceRepresentatives;
+    sourceRepresentatives.reserve(scene.tracks.size());
+
+    for (std::size_t trackIndex = 0; trackIndex < scene.tracks.size(); ++trackIndex) {
+        const EngineTrack& track = scene.tracks[trackIndex];
         auto player = std::make_unique<TrackPlayer>();
-        if (auto status = player->setSource(storage_, track.audioFile, track.sourceChannel,
-                                            track.sourceChannelCount);
-            !status) {
-            return status;
+        std::optional<std::size_t> sharedRepresentative;
+        for (const std::size_t candidate : sourceRepresentatives) {
+            if (sameSourcePlacement(track, scene.tracks[candidate])) {
+                sharedRepresentative = candidate;
+                break;
+            }
+        }
+        if (sharedRepresentative) {
+            if (auto status = player->shareSource(*prepared->players[*sharedRepresentative],
+                                                  track.sourceChannel,
+                                                  track.sourceChannelCount);
+                !status) {
+                return status;
+            }
+        } else {
+            if (auto status = player->setSource(storage_, track.audioFile, track.sourceChannel,
+                                                track.sourceChannelCount);
+                !status) {
+                return status;
+            }
+            if (auto status = player->prefetch(track.startFrame, track.sourceRange); !status) {
+                return status;
+            }
+            sourceRepresentatives.push_back(trackIndex);
         }
         player->mix().gain.store(track.gain, std::memory_order_relaxed);
         player->mix().pan.store(track.pan, std::memory_order_relaxed);
         player->mix().muted.store(track.muted, std::memory_order_relaxed);
         player->mix().soloed.store(track.soloed, std::memory_order_relaxed);
         player->setLoop(scene.loopRange, scene.loopEnabled);
-        if (auto status = player->prefetch(track.startFrame, track.sourceRange); !status) {
-            return status;
-        }
-
         prepared->trackIds.push_back(track.id);
         prepared->activePlayers.push_back(player.get());
         prepared->players.push_back(std::move(player));

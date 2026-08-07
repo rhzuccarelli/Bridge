@@ -23,7 +23,8 @@ is exclusively an explicit MTP import/export endpoint and is never a live audio 
 Each deck contains six synchronized stereo-capable tracks. Exactly one deck is active
 for playback; the others are source libraries. A TP-7 WAV may contain from one mono
 channel through six stereo pairs (twelve interleaved channels), and clips reference a
-pair without duplicating the imported file.
+pair without duplicating the imported file. All routes over the same placement share
+one file reader and one bounded multichannel stream.
 
 ## Quick start
 
