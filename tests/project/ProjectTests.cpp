@@ -1,7 +1,11 @@
+#include "aw/events/EventQueue.hpp"
 #include "aw/project/Project.hpp"
+#include "aw/project/ProjectManager.hpp"
+#include "aw/project/ProjectMetadata.hpp"
 #include "aw/project/Timeline.hpp"
 #include "aw/project/UndoStack.hpp"
 #include "framework/Test.hpp"
+#include "support/MemoryStorage.hpp"
 
 using namespace aw;
 
@@ -60,6 +64,14 @@ project::Project makeProjectWithOneTrack() {
     track.name = "Track01";
     project.mutableTimeline().tracks.push_back(std::move(track));
     return project;
+}
+
+events::ProjectEvent nextProjectEvent(events::EventQueue& queue) {
+    const auto event = queue.poll();
+    AW_REQUIRE(event.has_value());
+    const auto* projectEvent = std::get_if<events::ProjectEvent>(&*event);
+    AW_REQUIRE(projectEvent != nullptr);
+    return *projectEvent;
 }
 
 }  // namespace
@@ -190,4 +202,112 @@ AW_TEST(Project, HandsOutUniqueIdentifiers) {
     AW_CHECK_EQ(project.allocateTrackId(), core::TrackId{1});
     AW_CHECK_EQ(project.allocateTrackId(), core::TrackId{2});
     AW_CHECK_EQ(project.allocateClipId(), core::ClipId{1});
+}
+
+AW_TEST(MetadataSerializer, SavesAndLoadsProjectState) {
+    awtest::MemoryStorage storage;
+    project::Project project{"Session A", "/projects/SessionA"};
+    AW_REQUIRE(project.paths().ensureLayout(storage));
+
+    project.mutableTimeline().sampleRate = 48000;
+    project.mutableTimeline().loopRange = core::FrameRange{128, 256};
+    project.mutableTimeline().loopEnabled = true;
+
+    project::Track track;
+    track.id = project.allocateTrackId();
+    track.name = "Vocals";
+    track.gain = 0.75F;
+    track.pan = -0.25F;
+    track.muted = true;
+
+    project::Clip clip;
+    clip.id = project.allocateClipId();
+    clip.sourceFile = "take01.wav";
+    clip.sourceRange = core::FrameRange{64, 512};
+    clip.timelinePosition = 1024;
+    clip.gain = 0.5F;
+    clip.fadeInFrames = 12;
+    clip.fadeOutFrames = 24;
+    track.clips.push_back(std::move(clip));
+
+    project.mutableTimeline().tracks.push_back(std::move(track));
+
+    AW_REQUIRE(project::MetadataSerializer::save(storage, project));
+
+    const auto loaded = project::MetadataSerializer::load(storage, "/projects/SessionA");
+    AW_REQUIRE(loaded.hasValue());
+    AW_CHECK_EQ(loaded.value().name(), std::string{"Session A"});
+    AW_CHECK_EQ(loaded.value().timeline().sampleRate, core::SampleRate{48000});
+    AW_CHECK(loaded.value().timeline().loopEnabled);
+    AW_CHECK_EQ(loaded.value().timeline().loopRange.start, core::FrameIndex{128});
+    AW_CHECK_EQ(loaded.value().timeline().loopRange.length, core::FrameCount{256});
+    AW_CHECK_EQ(loaded.value().timeline().tracks.size(), std::size_t{1});
+    AW_CHECK_EQ(loaded.value().timeline().tracks[0].name, std::string{"Vocals"});
+    AW_CHECK_EQ(loaded.value().timeline().tracks[0].clips.size(), std::size_t{1});
+    AW_CHECK_EQ(loaded.value().timeline().tracks[0].clips[0].sourceFile, std::string{"take01.wav"});
+    AW_CHECK_EQ(loaded.value().timeline().tracks[0].clips[0].timelinePosition,
+                core::FrameIndex{1024});
+}
+
+AW_TEST(ProjectManager, CreateSaveOpenAndListProjects) {
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+
+    AW_REQUIRE(manager.createProject("Session 1"));
+    AW_CHECK(manager.hasProject());
+    AW_CHECK_EQ(manager.project().name(), std::string{"Session 1"});
+    AW_CHECK_EQ(manager.project().timeline().tracks.size(),
+                static_cast<std::size_t>(project::kTrackCount));
+    AW_CHECK(storage.exists("/projects/Session 1/metadata.json"));
+    AW_CHECK_EQ(nextProjectEvent(queue).change, events::ProjectChange::Opened);
+
+    AW_REQUIRE(manager.saveProject());
+    AW_CHECK(!manager.project().isModified());
+    AW_CHECK_EQ(nextProjectEvent(queue).change, events::ProjectChange::Saved);
+
+    const auto projects = manager.listProjects();
+    AW_REQUIRE(projects.hasValue());
+    AW_CHECK_EQ(projects.value().size(), std::size_t{1});
+    AW_CHECK_EQ(projects.value()[0].name, std::string{"Session 1"});
+    AW_CHECK_EQ(projects.value()[0].trackCount, static_cast<std::uint32_t>(project::kTrackCount));
+
+    AW_REQUIRE(manager.closeProject());
+    AW_CHECK(!manager.hasProject());
+    AW_CHECK_EQ(nextProjectEvent(queue).change, events::ProjectChange::Closed);
+
+    AW_REQUIRE(manager.openProject("/projects/Session 1"));
+    AW_CHECK(manager.hasProject());
+    AW_CHECK_EQ(manager.project().name(), std::string{"Session 1"});
+    AW_CHECK_EQ(nextProjectEvent(queue).change, events::ProjectChange::Opened);
+}
+
+AW_TEST(ProjectManager, BuildSceneFlattensTimelineClipsIntoEngineTracks) {
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+
+    AW_REQUIRE(manager.createProject("Session 2"));
+    project::Timeline& timeline =
+        const_cast<project::Timeline&>(manager.project().timeline());
+
+    project::Track* track = timeline.findTrack(1);
+    AW_REQUIRE(track != nullptr);
+    track->gain = 0.5F;
+    track->pan = -0.25F;
+    track->soloed = true;
+    track->clips.push_back(
+        project::Clip{1, "take01.wav", core::FrameRange{64, 512}, 1024, 0.75F, 0, 0});
+
+    const audio::EngineScene scene = manager.buildScene();
+    AW_CHECK_EQ(scene.sampleRate, core::SampleRate{48000});
+    AW_CHECK_EQ(scene.tracks.size(), std::size_t{1});
+    AW_CHECK_EQ(scene.tracks[0].id, core::TrackId{1});
+    AW_CHECK_EQ(scene.tracks[0].audioFile, core::Path{"/projects/Session 2/audio/take01.wav"});
+    AW_CHECK_EQ(scene.tracks[0].startFrame, core::FrameIndex{1024});
+    AW_CHECK_EQ(scene.tracks[0].sourceRange.start, core::FrameIndex{64});
+    AW_CHECK_EQ(scene.tracks[0].sourceRange.length, core::FrameCount{512});
+    AW_CHECK_EQ(scene.tracks[0].gain, 0.375F);
+    AW_CHECK_EQ(scene.tracks[0].pan, -0.25F);
+    AW_CHECK(scene.tracks[0].soloed);
 }

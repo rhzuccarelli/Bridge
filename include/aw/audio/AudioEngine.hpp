@@ -30,6 +30,7 @@ struct EngineTrack {
     core::TrackId id{core::kInvalidTrackId};
     core::Path audioFile;      ///< Absolute path to a local WAV. Never an MTP object.
     core::FrameIndex startFrame{0};  ///< Where the file begins on the timeline.
+    core::FrameRange sourceRange{};  ///< Which part of the file this clip plays.
     float gain{1.0F};
     float pan{0.0F};
     bool muted{false};

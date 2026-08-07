@@ -80,7 +80,9 @@ core::Status TerminalDisplay::open() {
             (impl_->height + (size.rows - 1) * 2 - 1) / std::max((size.rows - 1) * 2, 1);
         impl_->scale = std::max({horizontal, vertical, 1});
 
-        std::fwrite("\x1b[?25l", 1, 6, stdout);  // Hide the cursor.
+        // Use the terminal's alternate screen so the preview does not overwrite
+        // the user's shell history, and quitting cleanly restores the shell.
+        std::fwrite("\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l", 1, 20, stdout);
         std::fflush(stdout);
     }
 
@@ -93,7 +95,8 @@ void TerminalDisplay::close() noexcept {
         return;
     }
     if (impl_->interactive) {
-        std::fwrite("\x1b[0m\x1b[?25h\n", 1, 11, stdout);  // Reset colours, show cursor.
+        // Reset colours, show the cursor, and restore the normal screen buffer.
+        std::fwrite("\x1b[0m\x1b[?25h\x1b[?1049l", 1, 20, stdout);
         std::fflush(stdout);
     }
     impl_->pixels.clear();

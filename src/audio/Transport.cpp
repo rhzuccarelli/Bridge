@@ -46,9 +46,32 @@ core::FrameRange Transport::loopRange() const noexcept {
                             loopLength_.load(std::memory_order_relaxed)};
 }
 
-core::FrameIndex Transport::advance(core::FrameCount /*frames*/) noexcept {
-    // Phase 4: apply pendingSeek_, advance position_, wrap at the loop point.
-    return position_.load(std::memory_order_relaxed);
+core::FrameIndex Transport::advance(core::FrameCount frames) noexcept {
+    if (const core::FrameIndex seek = pendingSeek_.exchange(-1, std::memory_order_acq_rel);
+        seek >= 0) {
+        position_.store(seek, std::memory_order_release);
+    }
+
+    const core::FrameIndex blockStart = position_.load(std::memory_order_acquire);
+    const State currentState = state_.load(std::memory_order_acquire);
+    if (currentState != State::Playing && currentState != State::Recording) {
+        return blockStart;
+    }
+
+    core::FrameIndex next = blockStart + frames;
+    if (loopEnabled_.load(std::memory_order_acquire)) {
+        const core::FrameIndex start = loopStart_.load(std::memory_order_relaxed);
+        const core::FrameCount length = loopLength_.load(std::memory_order_relaxed);
+        if (length > 0) {
+            const core::FrameIndex end = start + length;
+            while (next >= end) {
+                next = start + (next - end);
+            }
+        }
+    }
+
+    position_.store(next, std::memory_order_release);
+    return blockStart;
 }
 
 }  // namespace aw::audio

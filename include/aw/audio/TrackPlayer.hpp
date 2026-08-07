@@ -48,8 +48,10 @@ public:
     [[nodiscard]] const TrackMixState& mix() const noexcept { return mix_; }
 
     // --- Streaming thread ---------------------------------------------------
-    /// Reads ahead from disk so `render()` never has to wait.  Blocking.
-    [[nodiscard]] core::Status prefetch(core::FrameIndex timelinePosition);
+    /// Reads this clip's source range ahead from disk so `render()` never has
+    /// to wait.  Blocking.
+    [[nodiscard]] core::Status prefetch(core::FrameIndex timelinePosition,
+                                        core::FrameRange sourceRange = {});
 
     // --- Audio thread -------------------------------------------------------
     /// Adds this track's contribution into `destination` (which is *not*

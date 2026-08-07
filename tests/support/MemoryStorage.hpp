@@ -78,10 +78,26 @@ public:
         const Path& directory) const override {
         std::vector<aw::hal::DirectoryEntry> entries;
         const std::string prefix = directory.string() + "/";
+        std::set<std::string> seen;
+
+        for (const auto& path : directories_) {
+            if (path == directory.string()) {
+                continue;
+            }
+            if (path.rfind(prefix, 0) == 0 &&
+                path.find('/', prefix.size()) == std::string::npos &&
+                seen.insert(path.substr(prefix.size())).second) {
+                aw::hal::DirectoryEntry entry;
+                entry.name = path.substr(prefix.size());
+                entry.isDirectory = true;
+                entries.push_back(std::move(entry));
+            }
+        }
 
         for (const auto& [path, contents] : files_) {
             if (path.rfind(prefix, 0) == 0 &&
-                path.find('/', prefix.size()) == std::string::npos) {
+                path.find('/', prefix.size()) == std::string::npos &&
+                seen.insert(path.substr(prefix.size())).second) {
                 aw::hal::DirectoryEntry entry;
                 entry.name = path.substr(prefix.size());
                 entry.size = contents.size();

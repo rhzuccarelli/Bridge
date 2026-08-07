@@ -51,7 +51,7 @@ rsync -az --delete \
     --exclude 'build*/' \
     --exclude '.DS_Store' \
     --exclude 'projects/' \
-    --info=stats1 \
+    --stats \
     ./ "$TARGET:$REMOTE_DIR/"
 
 say "Building on the Pi"
