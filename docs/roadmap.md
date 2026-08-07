@@ -93,7 +93,7 @@ writes silence to FC/LFE/RL/RR. Stored and MTP-exported audio is never resampled
 
 ## Phase 6 — GPIO backend
 
-**Implemented; Raspberry Pi hardware acceptance pending.**
+**Complete and accepted on Raspberry Pi 5 hardware.**
 
 libgpiod edge events, 20 ms debounce, 500 ms long-press, 100 ms auto-repeat, and
 quadrature decoding with four-transition detent coalescing. Only actually wired GPIO
@@ -108,9 +108,17 @@ one debounced press/release pair, and a held push produced one long-press follow
 
 ## Phase 7 — Display
 
-SPI panel driver, bitmap font generation, and the seven screens drawn for real:
-Home, Project Browser, Track View, Playback, Import, Export, Settings — plus waveform
-overviews, meters and the scrolling list.
+**Implemented; Raspberry Pi OLED acceptance pending.**
+
+The SSD1306/SH1106 SPI transport was already completed and hardware-tested in Phase
+1.5. Phase 7 adds checked-in 6×8 and 12×16 bitmap fonts, text/alignment, waveform and
+meter primitives, scrolling project selection, and real 128×64 layouts for Home,
+Project Browser, Track View, Playback, Import, Export and Settings. Import and Export
+show an explicit Phase 8 boundary until their MTP workflows are connected.
+
+Track View always shows the six synchronized stereo lanes. The four track keys use
+two banks: short encoder-push cycles Gain/Pan/Position, while long encoder-push toggles
+bank B1 (tracks 1–4) and B2 (tracks 5–6). The current bank is visible in the header.
 
 ## Phase 8 — MTP
 

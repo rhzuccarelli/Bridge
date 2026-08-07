@@ -1,19 +1,19 @@
 #include "aw/display/Font.hpp"
 
-// Phase 7 generates the glyph data into assets/fonts and compiles it in.
-// The empty spans here keep the API usable (measure() returns sane widths, so
-// layout code can be written and tested) while nothing is drawn yet.
+#include <array>
 
 namespace aw::display {
 namespace {
 
 constexpr std::uint8_t kSmallWidth = 6;
-constexpr std::uint8_t kSmallHeight = 10;
+constexpr std::uint8_t kSmallHeight = 8;
 constexpr std::uint8_t kLargeWidth = 12;
-constexpr std::uint8_t kLargeHeight = 20;
+constexpr std::uint8_t kLargeHeight = 16;
 
-const Font kSmall{kSmallWidth, kSmallHeight, 32, 95, {}};
-const Font kLarge{kLargeWidth, kLargeHeight, 32, 95, {}};
+#include "GeneratedFonts.inc"
+
+const Font kSmall{kSmallWidth, kSmallHeight, 32, 95, kSmallGlyphs};
+const Font kLarge{kLargeWidth, kLargeHeight, 32, 95, kLargeGlyphs};
 
 }  // namespace
 

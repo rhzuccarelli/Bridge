@@ -2,6 +2,9 @@
 #include "aw/display/Painter.hpp"
 #include "framework/Test.hpp"
 
+#include <algorithm>
+#include <array>
+
 using namespace aw;
 
 AW_TEST(Framebuffer, StartsFullyDamaged) {
@@ -90,6 +93,27 @@ AW_TEST(Painter, ClipsRectanglesThatCrossTheEdge) {
     const std::span<const display::Color> pixels = framebuffer.pixels();
     AW_CHECK_EQ(pixels[0], display::Color{0x00FF});
     AW_CHECK_EQ(pixels[15 * 16 + 15], display::Color{0x00FF});
+}
+
+AW_TEST(Painter, BitmapTextDrawsVisiblePixels) {
+    display::Framebuffer framebuffer{32, 16};
+    framebuffer.fill(display::palette::kBackground);
+    display::Painter painter{framebuffer};
+    const auto width = painter.drawText(1, 1, "A1", display::smallFont(), display::palette::kText);
+    AW_CHECK_EQ(width, std::int16_t{12});
+    AW_CHECK(std::any_of(framebuffer.pixels().begin(), framebuffer.pixels().end(),
+                         [](display::Color pixel) { return pixel == display::palette::kText; }));
+}
+
+AW_TEST(Painter, WaveformAndMeterDrawInsideTheirAreas) {
+    display::Framebuffer framebuffer{32, 16};
+    framebuffer.fill(display::palette::kBackground);
+    display::Painter painter{framebuffer};
+    const std::array<std::pair<float, float>, 2> peaks{{{-1.0F, 1.0F}, {-0.5F, 0.5F}}};
+    painter.drawWaveform({0, 0, 16, 16}, peaks, display::palette::kWaveform);
+    painter.drawMeter({18, 4, 14, 6}, 0.5F, false);
+    AW_CHECK_EQ(framebuffer.pixels()[0], display::palette::kWaveform);
+    AW_CHECK_EQ(framebuffer.pixels()[5 * 32 + 19], display::palette::kMeterOk);
 }
 
 AW_TEST(Color, PacksIntoRgb565) {

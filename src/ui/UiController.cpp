@@ -8,6 +8,37 @@
 #include "aw/ui/screens/SettingsScreen.hpp"
 #include "aw/ui/screens/TrackViewScreen.hpp"
 
+#include "aw/display/Color.hpp"
+#include "aw/display/Font.hpp"
+
+namespace {
+
+class TransferPlaceholder final : public aw::ui::Screen {
+public:
+    TransferPlaceholder(aw::ui::ScreenId id, std::string_view title) : id_{id}, title_{title} {}
+    aw::ui::ScreenId id() const noexcept override { return id_; }
+    std::string_view title() const noexcept override { return title_; }
+    void onEnter() override { dirty_ = true; }
+    aw::ui::NavigationRequest handleEvent(const aw::events::Event&) override {
+        return aw::ui::NavigationRequest::ignored();
+    }
+    bool isDirty() const noexcept override { return dirty_; }
+    void render(aw::display::Painter& painter) override {
+        painter.clear(aw::display::palette::kBackground);
+        painter.fillRect({0, 0, 128, 10}, aw::display::palette::kSurface);
+        painter.drawText(2, 1, title_, aw::display::smallFont(), aw::display::palette::kText);
+        painter.drawTextIn({0, 20, 128, 10}, "MTP IN PHASE 8", aw::display::smallFont(),
+                           aw::display::palette::kTextDim, aw::display::TextAlign::Center);
+        dirty_ = false;
+    }
+private:
+    aw::ui::ScreenId id_;
+    std::string_view title_;
+    bool dirty_{true};
+};
+
+}  // namespace
+
 namespace aw::ui {
 
 UiController::UiController(display::Framebuffer& framebuffer,
@@ -34,9 +65,8 @@ core::Status UiController::initialise() {
     navigator_.registerScreen(std::make_unique<TrackViewScreen>(projects_, engine_));
     navigator_.registerScreen(std::make_unique<PlaybackScreen>(projects_, engine_));
     navigator_.registerScreen(std::make_unique<SettingsScreen>());
-
-    // Import and Export need MTP collaborators; Phase 8 registers them from the
-    // composition root, which is where those objects live.
+    navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Import, "IMPORT"));
+    navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Export, "EXPORT"));
 
     navigator_.reset(ScreenId::Home);
 

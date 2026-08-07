@@ -1,6 +1,11 @@
 #include "aw/ui/screens/PlaybackScreen.hpp"
 
 #include "aw/display/Color.hpp"
+#include "aw/display/Font.hpp"
+
+#include <array>
+#include <algorithm>
+#include <cstdio>
 
 namespace aw::ui {
 
@@ -27,8 +32,32 @@ void PlaybackScreen::update(std::uint32_t /*elapsedMillis*/) {
 }
 
 void PlaybackScreen::render(display::Painter& painter) {
-    // Phase 7 draws timecode, waveform overview with playhead, and meters.
     painter.clear(display::palette::kBackground);
+    const auto& small = display::smallFont();
+    const auto& large = display::largeFont();
+    painter.fillRect({0, 0, 128, 10}, display::palette::kSurface);
+    painter.drawText(2, 1, "PLAYBACK", small, display::palette::kText);
+    const auto millis = core::framesToMillis(engine_.transport().position(), 48000);
+    char time[12];
+    std::snprintf(time, sizeof(time), "%02lld:%02lld.%03lld",
+                  static_cast<long long>(millis / 60000),
+                  static_cast<long long>((millis / 1000) % 60),
+                  static_cast<long long>(millis % 1000));
+    painter.drawTextIn({0, 12, 128, 18}, time, large, display::palette::kText,
+                       display::TextAlign::Center);
+    std::array<std::pair<float, float>, 32> envelope{};
+    for (std::size_t i = 0; i < envelope.size(); ++i) {
+        const float height = 0.15F + static_cast<float>((i * 7U) % 13U) / 16.0F;
+        envelope[i] = {-height, height};
+    }
+    painter.drawWaveform({2, 34, 124, 20}, envelope, display::palette::kWaveform);
+    const core::FrameCount length = projects_.hasProject() ? projects_.project().timeline().lengthFrames() : 0;
+    if (length > 0) {
+        const auto x = static_cast<std::int16_t>(2 + std::clamp<core::FrameIndex>(
+            engine_.transport().position(), 0, length) * 123 / length);
+        painter.drawVLine(x, 33, 22, display::palette::kAccent);
+    }
+    painter.drawText(2, 56, "TURN: SCRUB", small, display::palette::kTextDim);
     lastDrawnPosition_ = engine_.transport().position();
     dirty_.clear();
 }

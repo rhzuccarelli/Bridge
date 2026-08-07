@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "aw/audio/AudioEngine.hpp"
 #include "aw/project/ProjectManager.hpp"
 #include "aw/ui/DirtyFlag.hpp"
@@ -28,6 +30,7 @@ public:
 
     [[nodiscard]] core::TrackId focusedTrack() const noexcept { return focusedTrack_; }
     [[nodiscard]] ParameterMode parameterMode() const noexcept { return mode_; }
+    [[nodiscard]] std::uint8_t trackBank() const noexcept { return trackBank_; }
 
 private:
     project::ProjectManager& projects_;
@@ -35,6 +38,8 @@ private:
     DirtyFlag dirty_;
     core::TrackId focusedTrack_{core::kInvalidTrackId};
     ParameterMode mode_{ParameterMode::Gain};
+    std::uint8_t trackBank_{0};
+    std::array<float, project::kTrackCount> levels_{};
 };
 
 }  // namespace aw::ui
