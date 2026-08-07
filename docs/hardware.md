@@ -285,7 +285,7 @@ behind the RP1 southbridge, exposed as `gpiochip4` by older Bookworm kernels and
 `gpiochip0` by newer ones. Run `gpiodetect` and use whichever reports **54 lines**;
 override the default with `AW_GPIO_CHIP=gpiochipN`.
 
-### Notes for the Phase 6 implementation
+### Phase 6 behavior
 
 - The power line must be requested as an output and driven high **before** the
   encoder lines are read, and the request held open — releasing it drops the
@@ -298,6 +298,16 @@ override the default with `AW_GPIO_CHIP=gpiochipN`.
   so one physical click always moves the UI by exactly one row.
 - `SW` is active-low and is reported as `core::ButtonId::EncoderPush`, i.e. it
   arrives as a *button*, not as part of the encoder interface.
+
+Run the focused diagnostic on the Pi with:
+
+```bash
+AW_GPIO_CHIP=gpiochip0 ./build/src/platform/aw-gpio-test
+```
+
+It prints one `encoder +1` or `encoder -1` per detent plus debounced push,
+release, long-press and repeat events. Substitute the 54-line chip reported by
+`gpiodetect` when it is not `gpiochip0`.
 
 ---
 

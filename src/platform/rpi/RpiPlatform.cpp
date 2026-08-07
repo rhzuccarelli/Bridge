@@ -69,9 +69,8 @@ core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
     buttons->addSource(std::move(backends.buttons));  // keyboard (+ touch on HDMI)
     platform.buttons = std::move(buttons);
 
-    // The KY-040 is the real control, but its Phase 6 driver is a stub; compose
-    // it with the keyboard encoder so the arrow keys drive navigation over SSH
-    // until the GPIO decoder exists. When both work, their motion simply sums.
+    // The KY-040 is the real control. Keep the keyboard encoder composed beside
+    // it so bench work remains possible over SSH; motion from both simply sums.
     auto encoder = std::make_unique<CompositeEncoder>();
     encoder->addSource(std::make_unique<GpioEncoder>(effective.pins));
     if (backends.encoder) {

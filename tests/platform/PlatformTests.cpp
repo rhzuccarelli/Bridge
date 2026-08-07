@@ -14,6 +14,7 @@
 #include "aw/platform/CompositeEncoder.hpp"
 #include "aw/platform/FallbackAudioOutput.hpp"
 #include "aw/platform/rpi/AlsaPcm.hpp"
+#include "aw/platform/rpi/GpioInput.hpp"
 #include "aw/platform/desktop/KeyboardInput.hpp"
 #include "aw/platform/desktop/VirtualPanel.hpp"
 #include "framework/Test.hpp"
@@ -45,6 +46,40 @@ AW_TEST(AlsaPcm, ConvertsStereo48ToTp7SixChannel96) {
             AW_CHECK_EQ(tp7[frame * 6U + channel], 0.0F);
         }
     }
+}
+
+AW_TEST(GpioButton, DebouncesAndGeneratesHoldActions) {
+    rpi::ButtonStateMachine button;
+    AW_CHECK(!button.update(true, 1'000).has_value());
+    AW_CHECK(!button.update(false, 5'000).has_value());
+    AW_CHECK(!button.update(true, 10'000).has_value());
+    const auto pressed = button.update(true, 30'000);
+    AW_REQUIRE(pressed.has_value());
+    AW_CHECK_EQ(*pressed, core::ButtonAction::Pressed);
+    AW_CHECK(button.isPressed());
+    const auto held = button.update(true, 530'000);
+    AW_REQUIRE(held.has_value());
+    AW_CHECK_EQ(*held, core::ButtonAction::LongPressed);
+    const auto repeat = button.update(true, 630'000);
+    AW_REQUIRE(repeat.has_value());
+    AW_CHECK_EQ(*repeat, core::ButtonAction::Repeat);
+    AW_CHECK(!button.update(false, 640'000).has_value());
+    const auto released = button.update(false, 660'000);
+    AW_REQUIRE(released.has_value());
+    AW_CHECK_EQ(*released, core::ButtonAction::Released);
+}
+
+AW_TEST(GpioEncoder, CoalescesQuadratureTransitionsIntoDetents) {
+    rpi::QuadratureDecoder decoder;
+    decoder.reset(false, false);
+    AW_CHECK_EQ(decoder.update(false, true), 0);
+    AW_CHECK_EQ(decoder.update(true, true), 0);
+    AW_CHECK_EQ(decoder.update(true, false), 0);
+    AW_CHECK_EQ(decoder.update(false, false), -1);
+    AW_CHECK_EQ(decoder.update(true, false), 0);
+    AW_CHECK_EQ(decoder.update(true, true), 0);
+    AW_CHECK_EQ(decoder.update(false, true), 0);
+    AW_CHECK_EQ(decoder.update(false, false), 1);
 }
 
 // --- Keyboard mapping -------------------------------------------------------

@@ -93,8 +93,13 @@ writes silence to FC/LFE/RL/RR. Stored and MTP-exported audio is never resampled
 
 ## Phase 6 — GPIO backend
 
-libgpiod edge events, debounce, long-press, auto-repeat, quadrature decoding with
-detent coalescing. Buttons produce events; no UI code inside GPIO classes.
+**Implemented; Raspberry Pi hardware acceptance pending.**
+
+libgpiod edge events, 20 ms debounce, 500 ms long-press, 100 ms auto-repeat, and
+quadrature decoding with four-transition detent coalescing. Only actually wired GPIO
+lines are requested; the prototype currently has the KY-040 push switch on GPIO22 and
+CLK/DT on GPIO17/27. `aw-gpio-test` provides a focused 30-second hardware check.
+Buttons produce events; no UI code exists inside the GPIO classes.
 
 ## Phase 7 — Display
 

@@ -50,6 +50,8 @@ rsync -az --delete \
     --exclude '.git/' \
     --exclude 'build*/' \
     --exclude '.DS_Store' \
+    --exclude 'eval "$(ssh-agent -s)"' \
+    --exclude 'eval "$(ssh-agent -s)".pub' \
     --exclude 'projects/' \
     --stats \
     ./ "$TARGET:$REMOTE_DIR/"
