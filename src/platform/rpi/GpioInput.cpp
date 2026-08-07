@@ -4,7 +4,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <poll.h>
 #include <thread>
 #include <vector>
 
@@ -16,6 +15,39 @@ namespace {
 std::uint64_t nowMicros() noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+gpiod_line_request* requestLines(gpiod_chip* chip,
+                                 const std::vector<unsigned int>& offsets,
+                                 const char* consumer,
+                                 gpiod_line_direction direction,
+                                 bool edges) {
+    gpiod_line_settings* settings = gpiod_line_settings_new();
+    gpiod_line_config* lineConfig = gpiod_line_config_new();
+    gpiod_request_config* requestConfig = gpiod_request_config_new();
+    if (settings == nullptr || lineConfig == nullptr || requestConfig == nullptr) {
+        gpiod_line_settings_free(settings);
+        gpiod_line_config_free(lineConfig);
+        gpiod_request_config_free(requestConfig);
+        return nullptr;
+    }
+    gpiod_line_settings_set_direction(settings, direction);
+    if (direction == GPIOD_LINE_DIRECTION_INPUT) {
+        gpiod_line_settings_set_bias(settings, GPIOD_LINE_BIAS_PULL_UP);
+        if (edges) gpiod_line_settings_set_edge_detection(settings, GPIOD_LINE_EDGE_BOTH);
+    } else {
+        gpiod_line_settings_set_output_value(settings, GPIOD_LINE_VALUE_ACTIVE);
+    }
+    gpiod_request_config_set_consumer(requestConfig, consumer);
+    const int configured = gpiod_line_config_add_line_settings(
+        lineConfig, offsets.data(), offsets.size(), settings);
+    gpiod_line_request* request = configured < 0
+                                      ? nullptr
+                                      : gpiod_chip_request_lines(chip, requestConfig, lineConfig);
+    gpiod_request_config_free(requestConfig);
+    gpiod_line_config_free(lineConfig);
+    gpiod_line_settings_free(settings);
+    return request;
 }
 }  // namespace
 
@@ -62,8 +94,8 @@ struct GpioButtons::Impl {
     hal::ButtonListener* listener{nullptr};
     std::array<std::atomic<bool>, core::kButtonCount> pressed{};
     std::array<ButtonStateMachine, core::kButtonCount> states{};
-    std::array<gpiod_line*, core::kButtonCount> lines{};
     gpiod_chip* chip{nullptr};
+    gpiod_line_request* request{nullptr};
     std::jthread thread;
 };
 
@@ -79,45 +111,47 @@ void GpioButtons::setListener(hal::ButtonListener* listener) noexcept {
 
 core::Status GpioButtons::start() {
     stop();
-    impl_->chip = gpiod_chip_open_by_name(impl_->pins.chipName.c_str());
+    const std::string chipPath = "/dev/" + impl_->pins.chipName;
+    impl_->chip = gpiod_chip_open(chipPath.c_str());
     if (impl_->chip == nullptr) {
         return core::makeError(core::ErrorCode::DeviceNotConnected, "open GPIO chip");
     }
-    std::vector<pollfd> descriptors;
+    std::vector<unsigned int> offsets;
     std::vector<std::size_t> indices;
     for (std::size_t index = 0; index < impl_->pins.buttonLines.size(); ++index) {
         const int offset = impl_->pins.buttonLines[index];
         if (offset < 0) continue;
-        gpiod_line* line = gpiod_chip_get_line(impl_->chip, static_cast<unsigned int>(offset));
-        if (line == nullptr ||
-            gpiod_line_request_both_edges_events_flags(
-                line, "audio-workstation-buttons", GPIOD_LINE_REQUEST_FLAG_BIAS_PULL_UP) < 0) {
-            stop();
-            return core::makeError(core::ErrorCode::DeviceBusy, "request GPIO button line");
-        }
-        impl_->lines[index] = line;
-        descriptors.push_back(pollfd{gpiod_line_event_get_fd(line), POLLIN, 0});
+        offsets.push_back(static_cast<unsigned int>(offset));
         indices.push_back(index);
-        const bool raw = gpiod_line_get_value(line) == 0;
-        (void)impl_->states[index].update(raw, nowMicros());
     }
-    if (descriptors.empty()) {
+    if (offsets.empty()) {
         stop();
         return core::makeError(core::ErrorCode::DeviceNotConnected, "no GPIO buttons configured");
     }
-    impl_->thread = std::jthread{[this, descriptors = std::move(descriptors),
-                                  indices = std::move(indices)](std::stop_token stopToken) mutable {
+    impl_->request = requestLines(impl_->chip, offsets, "audio-workstation-buttons",
+                                  GPIOD_LINE_DIRECTION_INPUT, true);
+    if (impl_->request == nullptr) {
+        stop();
+        return core::makeError(core::ErrorCode::DeviceBusy, "request GPIO button lines");
+    }
+    for (std::size_t item = 0; item < offsets.size(); ++item) {
+        const bool raw = gpiod_line_request_get_value(impl_->request, offsets[item]) ==
+                         GPIOD_LINE_VALUE_INACTIVE;
+        (void)impl_->states[indices[item]].update(raw, nowMicros());
+    }
+    impl_->thread = std::jthread{[this, offsets = std::move(offsets),
+                                  indices = std::move(indices)](std::stop_token stopToken) {
+        gpiod_edge_event_buffer* events = gpiod_edge_event_buffer_new(16);
+        if (events == nullptr) return;
         while (!stopToken.stop_requested()) {
-            (void)::poll(descriptors.data(), descriptors.size(), 10);
+            if (gpiod_line_request_wait_edge_events(impl_->request, 10'000'000) > 0) {
+                (void)gpiod_line_request_read_edge_events(impl_->request, events, 16);
+            }
             const std::uint64_t timestamp = nowMicros();
-            for (std::size_t item = 0; item < descriptors.size(); ++item) {
-                if ((descriptors[item].revents & POLLIN) != 0) {
-                    gpiod_line_event event{};
-                    (void)gpiod_line_event_read(impl_->lines[indices[item]], &event);
-                    descriptors[item].revents = 0;
-                }
+            for (std::size_t item = 0; item < offsets.size(); ++item) {
                 const std::size_t index = indices[item];
-                const bool raw = gpiod_line_get_value(impl_->lines[index]) == 0;
+                const bool raw = gpiod_line_request_get_value(impl_->request, offsets[item]) ==
+                                 GPIOD_LINE_VALUE_INACTIVE;
                 if (const auto action = impl_->states[index].update(raw, timestamp)) {
                     impl_->pressed[index].store(impl_->states[index].isPressed(),
                                                 std::memory_order_release);
@@ -128,6 +162,7 @@ core::Status GpioButtons::start() {
                 }
             }
         }
+        gpiod_edge_event_buffer_free(events);
     }};
     return core::success();
 }
@@ -137,10 +172,8 @@ void GpioButtons::stop() noexcept {
         impl_->thread.request_stop();
         impl_->thread.join();
     }
-    for (gpiod_line*& line : impl_->lines) {
-        if (line != nullptr) gpiod_line_release(line);
-        line = nullptr;
-    }
+    if (impl_->request != nullptr) gpiod_line_request_release(impl_->request);
+    impl_->request = nullptr;
     if (impl_->chip != nullptr) gpiod_chip_close(impl_->chip);
     impl_->chip = nullptr;
 }
@@ -158,9 +191,8 @@ struct GpioEncoder::Impl {
     hal::EncoderListener* listener{nullptr};
     std::atomic<std::int32_t> accumulatedDelta{0};
     gpiod_chip* chip{nullptr};
-    gpiod_line* lineA{nullptr};
-    gpiod_line* lineB{nullptr};
-    gpiod_line* powerLine{nullptr};
+    gpiod_line_request* request{nullptr};
+    gpiod_line_request* powerRequest{nullptr};
     QuadratureDecoder decoder;
     std::jthread thread;
 };
@@ -177,48 +209,45 @@ void GpioEncoder::setListener(hal::EncoderListener* listener) noexcept {
 
 core::Status GpioEncoder::start() {
     stop();
-    impl_->chip = gpiod_chip_open_by_name(impl_->pins.chipName.c_str());
+    const std::string chipPath = "/dev/" + impl_->pins.chipName;
+    impl_->chip = gpiod_chip_open(chipPath.c_str());
     if (impl_->chip == nullptr) {
         return core::makeError(core::ErrorCode::DeviceNotConnected, "open GPIO chip");
     }
     if (impl_->pins.encoderPowerLine >= 0) {
-        impl_->powerLine = gpiod_chip_get_line(
-            impl_->chip, static_cast<unsigned int>(impl_->pins.encoderPowerLine));
-        if (impl_->powerLine == nullptr ||
-            gpiod_line_request_output(impl_->powerLine, "audio-workstation-encoder-power", 1) < 0) {
+        impl_->powerRequest = requestLines(
+            impl_->chip, {static_cast<unsigned int>(impl_->pins.encoderPowerLine)},
+            "audio-workstation-encoder-power", GPIOD_LINE_DIRECTION_OUTPUT, false);
+        if (impl_->powerRequest == nullptr) {
             stop();
             return core::makeError(core::ErrorCode::DeviceBusy, "request encoder power GPIO");
         }
     }
-    impl_->lineA = gpiod_chip_get_line(impl_->chip,
-                                       static_cast<unsigned int>(impl_->pins.encoderLineA));
-    impl_->lineB = gpiod_chip_get_line(impl_->chip,
-                                       static_cast<unsigned int>(impl_->pins.encoderLineB));
-    if (impl_->lineA == nullptr || impl_->lineB == nullptr ||
-        gpiod_line_request_both_edges_events_flags(
-            impl_->lineA, "audio-workstation-encoder", GPIOD_LINE_REQUEST_FLAG_BIAS_PULL_UP) < 0 ||
-        gpiod_line_request_both_edges_events_flags(
-            impl_->lineB, "audio-workstation-encoder", GPIOD_LINE_REQUEST_FLAG_BIAS_PULL_UP) < 0) {
+    const std::vector<unsigned int> offsets{
+        static_cast<unsigned int>(impl_->pins.encoderLineA),
+        static_cast<unsigned int>(impl_->pins.encoderLineB)};
+    impl_->request = requestLines(impl_->chip, offsets, "audio-workstation-encoder",
+                                  GPIOD_LINE_DIRECTION_INPUT, true);
+    if (impl_->request == nullptr) {
         stop();
         return core::makeError(core::ErrorCode::DeviceBusy, "request encoder GPIO lines");
     }
-    impl_->decoder.reset(gpiod_line_get_value(impl_->lineA) != 0,
-                         gpiod_line_get_value(impl_->lineB) != 0);
+    impl_->decoder.reset(
+        gpiod_line_request_get_value(impl_->request, offsets[0]) == GPIOD_LINE_VALUE_ACTIVE,
+        gpiod_line_request_get_value(impl_->request, offsets[1]) == GPIOD_LINE_VALUE_ACTIVE);
     impl_->thread = std::jthread{[this](std::stop_token stopToken) {
-        std::array<pollfd, 2> descriptors{{
-            {gpiod_line_event_get_fd(impl_->lineA), POLLIN, 0},
-            {gpiod_line_event_get_fd(impl_->lineB), POLLIN, 0}}};
+        gpiod_edge_event_buffer* events = gpiod_edge_event_buffer_new(16);
+        if (events == nullptr) return;
         while (!stopToken.stop_requested()) {
-            if (::poll(descriptors.data(), descriptors.size(), 10) <= 0) continue;
-            for (std::size_t index = 0; index < descriptors.size(); ++index) {
-                if ((descriptors[index].revents & POLLIN) == 0) continue;
-                gpiod_line_event event{};
-                (void)gpiod_line_event_read(index == 0 ? impl_->lineA : impl_->lineB, &event);
-                descriptors[index].revents = 0;
-            }
+            if (gpiod_line_request_wait_edge_events(impl_->request, 10'000'000) <= 0) continue;
+            (void)gpiod_line_request_read_edge_events(impl_->request, events, 16);
             const std::int32_t delta = impl_->decoder.update(
-                gpiod_line_get_value(impl_->lineA) != 0,
-                gpiod_line_get_value(impl_->lineB) != 0);
+                gpiod_line_request_get_value(impl_->request,
+                                             static_cast<unsigned int>(impl_->pins.encoderLineA)) ==
+                    GPIOD_LINE_VALUE_ACTIVE,
+                gpiod_line_request_get_value(impl_->request,
+                                             static_cast<unsigned int>(impl_->pins.encoderLineB)) ==
+                    GPIOD_LINE_VALUE_ACTIVE);
             if (delta != 0) {
                 impl_->accumulatedDelta.fetch_add(delta, std::memory_order_relaxed);
                 if (impl_->listener != nullptr) {
@@ -226,6 +255,7 @@ core::Status GpioEncoder::start() {
                 }
             }
         }
+        gpiod_edge_event_buffer_free(events);
     }};
     return core::success();
 }
@@ -235,12 +265,10 @@ void GpioEncoder::stop() noexcept {
         impl_->thread.request_stop();
         impl_->thread.join();
     }
-    if (impl_->lineA != nullptr) gpiod_line_release(impl_->lineA);
-    if (impl_->lineB != nullptr) gpiod_line_release(impl_->lineB);
-    if (impl_->powerLine != nullptr) gpiod_line_release(impl_->powerLine);
-    impl_->lineA = nullptr;
-    impl_->lineB = nullptr;
-    impl_->powerLine = nullptr;
+    if (impl_->request != nullptr) gpiod_line_request_release(impl_->request);
+    if (impl_->powerRequest != nullptr) gpiod_line_request_release(impl_->powerRequest);
+    impl_->request = nullptr;
+    impl_->powerRequest = nullptr;
     if (impl_->chip != nullptr) gpiod_chip_close(impl_->chip);
     impl_->chip = nullptr;
 }
