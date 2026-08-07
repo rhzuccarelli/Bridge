@@ -20,10 +20,24 @@ NavigationRequest TrackViewScreen::handleEvent(const events::Event& event) {
         return NavigationRequest::none();
     }
     if (const auto* button = std::get_if<events::ButtonEvent>(&event)) {
-        if (button->id == core::ButtonId::EncoderPush &&
-            button->action == core::ButtonAction::LongPressed) {
-            trackBank_ = trackBank_ == 0 ? 1 : 0;
-            dirty_.set();
+        if (button->id == core::ButtonId::EncoderPush) {
+            if (button->action == core::ButtonAction::Pressed) {
+                encoderPushWasLong_ = false;
+                return NavigationRequest::none();
+            }
+            if (button->action == core::ButtonAction::LongPressed) {
+                encoderPushWasLong_ = true;
+                trackBank_ = trackBank_ == 0 ? 1 : 0;
+                dirty_.set();
+                return NavigationRequest::none();
+            }
+            if (button->action == core::ButtonAction::Released && !encoderPushWasLong_) {
+                mode_ = mode_ == ParameterMode::Gain      ? ParameterMode::Pan
+                        : mode_ == ParameterMode::Pan     ? ParameterMode::Position
+                                                          : ParameterMode::Gain;
+                dirty_.set();
+                return NavigationRequest::none();
+            }
             return NavigationRequest::none();
         }
         if (button->action != core::ButtonAction::Pressed) {
@@ -46,11 +60,6 @@ NavigationRequest TrackViewScreen::handleEvent(const events::Event& event) {
                 return NavigationRequest::none();
             }
             case core::ButtonId::EncoderPush:
-                // Cycle what the encoder edits. Three modes, no menu.
-                mode_ = mode_ == ParameterMode::Gain      ? ParameterMode::Pan
-                        : mode_ == ParameterMode::Pan     ? ParameterMode::Position
-                                                          : ParameterMode::Gain;
-                dirty_.set();
                 return NavigationRequest::none();
             default:
                 return NavigationRequest::ignored();

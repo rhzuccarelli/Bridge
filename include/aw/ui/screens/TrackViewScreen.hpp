@@ -39,6 +39,7 @@ private:
     core::TrackId focusedTrack_{core::kInvalidTrackId};
     ParameterMode mode_{ParameterMode::Gain};
     std::uint8_t trackBank_{0};
+    bool encoderPushWasLong_{false};
     std::array<float, project::kTrackCount> levels_{};
 };
 
