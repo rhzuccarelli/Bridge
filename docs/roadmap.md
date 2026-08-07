@@ -79,7 +79,7 @@ and punch-in writing remain future work after the input backend exists.
 
 ## Phase 5 — ALSA backend
 
-**Implemented; Raspberry Pi hardware acceptance pending.**
+**Complete and accepted on Raspberry Pi 5 hardware.**
 
 `S24_3LE`, 48 kHz, stereo, `SCHED_FIFO` thread, explicit period/buffer sizing, xrun
 recovery and reporting. Six synchronized stereo project tracks are mixed by Phase 4
@@ -100,6 +100,11 @@ quadrature decoding with four-transition detent coalescing. Only actually wired 
 lines are requested; the prototype currently has the KY-040 push switch on GPIO22 and
 CLK/DT on GPIO17/27. `aw-gpio-test` provides a focused 30-second hardware check.
 Buttons produce events; no UI code exists inside the GPIO classes.
+
+Hardware acceptance used the RP1 `gpiochip0` (54 lines): clockwise and
+counter-clockwise turns produced one signed event per decoded detent, a click produced
+one debounced press/release pair, and a held push produced one long-press followed by
+100 ms repeat events until release.
 
 ## Phase 7 — Display
 

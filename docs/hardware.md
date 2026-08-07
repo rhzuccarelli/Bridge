@@ -309,6 +309,10 @@ It prints one `encoder +1` or `encoder -1` per detent plus debounced push,
 release, long-press and repeat events. Substitute the 54-line chip reported by
 `gpiodetect` when it is not `gpiochip0`.
 
+Verified on the Raspberry Pi 5 prototype with `pinctrl-rp1` exposed as
+`gpiochip0`: GPIO17/27 reported both turn directions and GPIO22 produced clean
+press, release, long-press and repeat events.
+
 ---
 
 ## Mixed input sources
