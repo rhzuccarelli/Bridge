@@ -107,7 +107,7 @@ Fixed now, in Phase 1, because it is the decision everything else is built on.
 | Context | What runs there | Constraints |
 | --- | --- | --- |
 | **Audio thread** | `AudioEngine::renderAudio`, `Mixer`, `TrackPlayer::render`, `Transport::advance` | No allocation, no locks, no I/O, no logging, no exceptions. |
-| **Streaming thread** | `TrackPlayer::prefetch`, WAV reads | Blocking file I/O, fills per-track ring buffers. |
+| **Streaming thread** | `TrackPlayer::stream`, WAV reads, retired-scene reclamation | Blocking file I/O, fills per-track ring buffers. |
 | **I/O worker** | MTP transfers, project save/load, directory scans | Blocking, seconds-long operations. Cancellable. |
 | **Main loop** | Event dispatch, UI update, render, display flush | Never blocks on anything. |
 
@@ -187,6 +187,44 @@ Why this matters:
   with no project code in the binary.
 - The port keeps the engine **byte-for-byte identical** — it depends only on `core`,
   `hal` and `events`.
+
+### Phase 4 realtime ownership
+
+`setScene()` performs all path lookup, WAV opening, allocation and initial buffering on
+the control thread. It publishes one prepared scene pointer. The audio callback adopts
+that pointer only at the next block boundary and sends the previous scene through a
+wait-free retirement queue. The streaming thread is the sole reclaimer, so neither
+destruction nor allocator work can occur in the callback.
+
+Each clip owns a bounded SPSC queue of 512-frame stereo blocks. Fifteen usable blocks
+provide about 160 ms of read-ahead at 48 kHz while keeping memory fixed regardless of
+recording length. The streaming thread is the only producer and the audio callback the
+only consumer. A generation number invalidates queued blocks after an explicit seek;
+loop heads are queued in playback order so ordinary wrapping stays sample-continuous.
+
+Alternatives considered:
+
+- Loading a whole clip is simple but makes memory proportional to recording duration
+  and cannot fit the ESP32-P4 target.
+- A mutex-protected shared cache simplifies ownership but can priority-invert the audio
+  callback behind SD-card I/O.
+- Reference-counted scene snapshots simplify lifetime code, but releasing the last
+  reference can invoke destruction on the audio thread. Explicit retirement keeps the
+  realtime cost fixed and visible.
+
+Live gain, pan, mute, solo and master-gain changes cross a second SPSC command queue and
+are applied at block boundaries. They do not rebuild scenes and cannot race scene
+replacement. Loop blocks are split at the exact boundary before the transport wraps,
+so a hardware period may contain the tail and head of a loop without losing sync.
+Meter and position events are throttled to 30 Hz; transport changes remain immediate.
+
+### Record behavior
+
+Bridge uses Portastudio semantics: `Record(track)` arms a track without moving the
+playhead; a subsequent `Play` enters `Recording`. `Stop` ends the pass but leaves the
+track armed, while explicit disarm returns future Play presses to normal playback.
+Phase 4 implements only this transport contract. Capture and punch-in are intentionally
+deferred until an audio-input backend exists.
 
 ---
 

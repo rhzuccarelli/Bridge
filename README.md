@@ -1,6 +1,6 @@
 # Audio Workstation
 
-A standalone hardware multitrack recorder/editor. Not a DAW — a dedicated device with
+A standalone TP-7 companion for multitrack editing. Not a DAW — a dedicated device with
 physical controls, a small screen, instant boot, and a fast workflow, in the spirit of
 the Tascam Portastudio and the Zoom R-series.
 
@@ -16,10 +16,10 @@ only `src/platform/` changes when the port happens.
 
 ## Status
 
-**Phases 1, 1.5 and 2 complete.** The portable architecture, simulator, Raspberry Pi
-prototype I/O, and streaming WAV support are implemented. WAV files are parsed as RIFF
-chunk lists, read and written without whole-file loads, and converted between packed PCM
-and planar float buffers. Later project, MTP and screen work remains phased separately.
+**Phases 1–4 complete.** The portable architecture, Raspberry Pi prototype I/O,
+streaming WAV layer, project manager, non-destructive model, and realtime multitrack
+playback engine are implemented. Playback uses bounded local-storage buffers; the TP-7
+is exclusively an explicit MTP import/export endpoint and is never a live audio source.
 
 ## Quick start
 

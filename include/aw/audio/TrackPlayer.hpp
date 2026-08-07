@@ -12,9 +12,9 @@ namespace aw::audio {
 
 /// Per-track mix parameters.
 ///
-/// Plain values, updated atomically from the UI thread and read by the audio
-/// thread.  Smoothing (to avoid zipper noise on gain changes) is applied inside
-/// `TrackPlayer`, not here.
+/// Plain values, updated atomically from the UI thread and read once per audio
+/// block. Per-block snapshots keep both channels coherent and bound parameter
+/// latency to one hardware period.
 struct TrackMixState {
     std::atomic<float> gain{1.0F};    ///< Linear, 0 .. ~4 (+12 dB).
     std::atomic<float> pan{0.0F};     ///< -1 hard left .. +1 hard right.
@@ -52,6 +52,15 @@ public:
     /// to wait.  Blocking.
     [[nodiscard]] core::Status prefetch(core::FrameIndex timelinePosition,
                                         core::FrameRange sourceRange = {});
+
+    /// Refills the bounded SPSC stream. Called only by the streaming thread.
+    /// Returns true if it produced at least one block.
+    [[nodiscard]] bool stream();
+    void setLoop(core::FrameRange range, bool enabled) noexcept;
+
+    /// Audio-thread notification for an explicit seek (loop wraps do not call
+    /// this because the producer has already queued the loop head).
+    void requestStreamPosition(core::FrameIndex timelinePosition) noexcept;
 
     // --- Audio thread -------------------------------------------------------
     /// Adds this track's contribution into `destination` (which is *not*

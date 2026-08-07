@@ -6,7 +6,10 @@
 
 namespace aw::audio {
 
-void Transport::requestPlay() noexcept { state_.store(State::Playing, std::memory_order_release); }
+void Transport::requestPlay() noexcept {
+    const State next = isRecordArmed() ? State::Recording : State::Playing;
+    state_.store(next, std::memory_order_release);
+}
 
 void Transport::requestStop() noexcept {
     state_.store(State::Stopped, std::memory_order_release);
@@ -15,12 +18,20 @@ void Transport::requestStop() noexcept {
 
 void Transport::requestPause() noexcept { state_.store(State::Paused, std::memory_order_release); }
 
-void Transport::requestRecord() noexcept {
-    state_.store(State::Recording, std::memory_order_release);
+void Transport::requestRecord(core::TrackId track) noexcept {
+    armedTrack_.store(track, std::memory_order_release);
+}
+
+void Transport::disarmRecord() noexcept {
+    armedTrack_.store(core::kInvalidTrackId, std::memory_order_release);
+    if (state() == State::Recording) {
+        state_.store(State::Playing, std::memory_order_release);
+    }
 }
 
 void Transport::requestSeek(core::FrameIndex frame) noexcept {
     pendingSeek_.store(frame < 0 ? 0 : frame, std::memory_order_release);
+    seekRevision_.fetch_add(1, std::memory_order_release);
 }
 
 void Transport::setLoop(core::FrameRange range, bool enabled) noexcept {
@@ -44,6 +55,18 @@ bool Transport::isLoopEnabled() const noexcept {
 core::FrameRange Transport::loopRange() const noexcept {
     return core::FrameRange{loopStart_.load(std::memory_order_relaxed),
                             loopLength_.load(std::memory_order_relaxed)};
+}
+
+bool Transport::isRecordArmed() const noexcept {
+    return armedTrack_.load(std::memory_order_acquire) != core::kInvalidTrackId;
+}
+
+core::TrackId Transport::armedTrack() const noexcept {
+    return armedTrack_.load(std::memory_order_acquire);
+}
+
+std::uint64_t Transport::seekRevision() const noexcept {
+    return seekRevision_.load(std::memory_order_acquire);
 }
 
 core::FrameIndex Transport::advance(core::FrameCount frames) noexcept {

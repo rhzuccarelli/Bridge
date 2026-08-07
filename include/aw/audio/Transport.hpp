@@ -27,7 +27,10 @@ public:
     void requestPlay() noexcept;
     void requestStop() noexcept;
     void requestPause() noexcept;
-    void requestRecord() noexcept;
+    /// Portastudio semantics: arms a track but does not roll. A following Play
+    /// enters Recording; Stop leaves the track armed for another take.
+    void requestRecord(core::TrackId track) noexcept;
+    void disarmRecord() noexcept;
     void requestSeek(core::FrameIndex frame) noexcept;
     void setLoop(core::FrameRange range, bool enabled) noexcept;
 
@@ -36,6 +39,9 @@ public:
     [[nodiscard]] core::FrameIndex position() const noexcept;
     [[nodiscard]] bool isLoopEnabled() const noexcept;
     [[nodiscard]] core::FrameRange loopRange() const noexcept;
+    [[nodiscard]] bool isRecordArmed() const noexcept;
+    [[nodiscard]] core::TrackId armedTrack() const noexcept;
+    [[nodiscard]] std::uint64_t seekRevision() const noexcept;
 
     // --- Realtime side (audio thread only) ----------------------------------
     /// Applies pending requests and advances the playhead by `frames`,
@@ -49,6 +55,8 @@ private:
     std::atomic<bool> loopEnabled_{false};
     std::atomic<core::FrameIndex> loopStart_{0};
     std::atomic<core::FrameCount> loopLength_{0};
+    std::atomic<core::TrackId> armedTrack_{core::kInvalidTrackId};
+    std::atomic<std::uint64_t> seekRevision_{0};
 };
 
 }  // namespace aw::audio

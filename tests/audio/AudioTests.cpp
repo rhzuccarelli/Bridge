@@ -89,6 +89,19 @@ std::vector<std::byte> makeStereo24Data(std::initializer_list<std::array<float, 
     return data;
 }
 
+std::vector<std::byte> makeRepeatedStereo24Data(std::array<float, 2> frame,
+                                                std::size_t frameCount) {
+    std::vector<std::byte> data;
+    data.reserve(frameCount * 6U);
+    const auto left = int24Bytes(frame[0]);
+    const auto right = int24Bytes(frame[1]);
+    for (std::size_t i = 0; i < frameCount; ++i) {
+        data.insert(data.end(), left.begin(), left.end());
+        data.insert(data.end(), right.begin(), right.end());
+    }
+    return data;
+}
+
 std::vector<std::byte> makeWaveFile(std::vector<std::vector<std::byte>> chunks) {
     std::vector<std::byte> bytes;
     bytes.insert(bytes.end(),
@@ -193,11 +206,20 @@ AW_TEST(Transport, RecordsStateRequests) {
     transport.requestPause();
     AW_CHECK_EQ(transport.state(), events::TransportState::Paused);
 
-    transport.requestRecord();
+    transport.requestRecord(3);
+    AW_CHECK(transport.isRecordArmed());
+    AW_CHECK_EQ(transport.armedTrack(), core::TrackId{3});
+    AW_CHECK_EQ(transport.state(), events::TransportState::Paused);
+
+    transport.requestPlay();
     AW_CHECK_EQ(transport.state(), events::TransportState::Recording);
 
     transport.requestStop();
     AW_CHECK_EQ(transport.state(), events::TransportState::Stopped);
+    AW_CHECK(transport.isRecordArmed());
+
+    transport.disarmRecord();
+    AW_CHECK(!transport.isRecordArmed());
 }
 
 AW_TEST(Transport, StoresTheLoopRange) {
@@ -268,6 +290,30 @@ AW_TEST(TrackPlayer, RendersPrefetchedAudioAtTimelineOffset) {
     AW_CHECK(nearlyEqual(output.channel(0)[1], 0.5F));
     AW_CHECK(nearlyEqual(output.channel(0)[2], 0.25F));
     AW_CHECK(nearlyEqual(output.channel(0)[3], 0.0F));
+}
+
+AW_TEST(TrackPlayer, RefillsBeyondItsInitialBoundedWindow) {
+    constexpr core::FrameCount kFrames = 10000;
+    awtest::MemoryStorage storage;
+    storage.addFile("/projects/Take/audio/Long.wav",
+                    makeWaveFile({makeFmtChunk(1, 2, 48000, 24),
+                                  makeChunk("data", makeRepeatedStereo24Data({0.5F, -0.5F},
+                                                                            kFrames))}));
+    audio::TrackPlayer player;
+    AW_REQUIRE(player.setSource(storage, "/projects/Take/audio/Long.wav"));
+    AW_REQUIRE(player.prefetch(0, core::FrameRange{0, kFrames}));
+
+    audio::AudioBuffer output{2, 256};
+    for (core::FrameIndex position = 0; position < kFrames; position += 256) {
+        const core::FrameCount count = std::min<core::FrameCount>(256, kFrames - position);
+        output.setFrameCount(count);
+        output.clear();
+        player.render(output, position, count);
+        AW_CHECK(nearlyEqual(output.channel(0)[0], 0.5F));
+        AW_CHECK(nearlyEqual(output.channel(1)[0], -0.5F));
+        (void)player.stream();
+    }
+    AW_CHECK(!player.consumeUnderrunFlag());
 }
 
 AW_TEST(Mixer, HonorsSoloBeforeSumming) {
@@ -497,5 +543,84 @@ AW_TEST(AudioEngine, RendersSceneAudioIntoInterleavedOutput) {
     AW_CHECK(sawLevel);
     AW_CHECK(sawPosition);
 
+    engine.stop();
+}
+
+AW_TEST(AudioEngine, StoppedTransportRendersSilence) {
+    awtest::MemoryStorage storage;
+    storage.addFile("/projects/Take/audio/Track01.wav",
+                    makeWaveFile({makeFmtChunk(1, 2, 48000, 24),
+                                  makeChunk("data", makeStereo24Data({{1.0F, 1.0F}}))}));
+    FakeAudioOutput output;
+    events::EventQueue queue;
+    audio::AudioEngine engine{output, storage, queue};
+    AW_REQUIRE(engine.start(8));
+    audio::EngineScene scene;
+    scene.tracks.push_back(audio::EngineTrack{
+        1, "/projects/Take/audio/Track01.wav", 0, core::FrameRange{0, 1}});
+    AW_REQUIRE(engine.setScene(scene));
+
+    std::array<float, 2> interleaved{0.5F, 0.5F};
+    engine.renderAudio(interleaved, 1, 2);
+    AW_CHECK_EQ(interleaved[0], 0.0F);
+    AW_CHECK_EQ(interleaved[1], 0.0F);
+    engine.stop();
+}
+
+AW_TEST(AudioEngine, WrapsLoopInsideOneOutputBlock) {
+    awtest::MemoryStorage storage;
+    storage.addFile("/projects/Take/audio/Loop.wav",
+                    makeWaveFile({makeFmtChunk(1, 2, 48000, 24),
+                                  makeChunk("data", makeStereo24Data({{0.25F, 0.25F},
+                                                                      {0.75F, 0.75F}}))}));
+    FakeAudioOutput output;
+    events::EventQueue queue;
+    audio::AudioEngine engine{output, storage, queue};
+    AW_REQUIRE(engine.start(8));
+    audio::EngineScene scene;
+    scene.loopEnabled = true;
+    scene.loopRange = core::FrameRange{0, 2};
+    scene.tracks.push_back(
+        audio::EngineTrack{1, "/projects/Take/audio/Loop.wav", 0, core::FrameRange{0, 2}});
+    AW_REQUIRE(engine.setScene(scene));
+    engine.transport().requestPlay();
+
+    std::array<float, 6> interleaved{};
+    engine.renderAudio(interleaved, 3, 2);
+    AW_CHECK(nearlyEqual(interleaved[0], 0.25F));
+    AW_CHECK(nearlyEqual(interleaved[2], 0.75F));
+    AW_CHECK(nearlyEqual(interleaved[4], 0.25F));
+    AW_CHECK_EQ(engine.transport().position(), core::FrameIndex{1});
+    engine.stop();
+}
+
+AW_TEST(AudioEngine, ActivatesPreparedSceneAtNextBlockBoundary) {
+    awtest::MemoryStorage storage;
+    storage.addFile("/projects/Take/audio/A.wav",
+                    makeWaveFile({makeFmtChunk(1, 2, 48000, 24),
+                                  makeChunk("data", makeRepeatedStereo24Data({0.25F, 0.25F}, 2))}));
+    storage.addFile("/projects/Take/audio/B.wav",
+                    makeWaveFile({makeFmtChunk(1, 2, 48000, 24),
+                                  makeChunk("data", makeRepeatedStereo24Data({-0.5F, -0.5F}, 2))}));
+    FakeAudioOutput output;
+    events::EventQueue queue;
+    audio::AudioEngine engine{output, storage, queue};
+    AW_REQUIRE(engine.start(8));
+
+    audio::EngineScene first;
+    first.tracks.push_back(
+        audio::EngineTrack{1, "/projects/Take/audio/A.wav", 0, core::FrameRange{0, 2}});
+    AW_REQUIRE(engine.setScene(first));
+    engine.transport().requestPlay();
+    std::array<float, 2> interleaved{};
+    engine.renderAudio(interleaved, 1, 2);
+    AW_CHECK(nearlyEqual(interleaved[0], 0.25F));
+
+    audio::EngineScene second;
+    second.tracks.push_back(
+        audio::EngineTrack{1, "/projects/Take/audio/B.wav", 0, core::FrameRange{0, 2}});
+    AW_REQUIRE(engine.setScene(second));
+    engine.renderAudio(interleaved, 1, 2);
+    AW_CHECK(nearlyEqual(interleaved[0], -0.5F));
     engine.stop();
 }

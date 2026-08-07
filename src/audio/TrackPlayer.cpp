@@ -1,17 +1,46 @@
 #include "aw/audio/TrackPlayer.hpp"
 
+#include "aw/core/RingBuffer.hpp"
+
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <optional>
 
 namespace aw::audio {
 
-/// Streaming state.  Phase 4 adds the disk->audio ring buffer here; keeping it
-/// in the pimpl means the ring's size and layout can change without recompiling
-/// every user of TrackPlayer.
+namespace {
+
+constexpr core::FrameCount kStreamBlockFrames = 512;
+constexpr std::size_t kStreamBlockCount = 16;
+
+struct StreamBlock {
+    core::FrameIndex timelineStart{0};
+    core::FrameCount frames{0};
+    std::uint64_t generation{0};
+    core::ChannelCount channels{0};
+    std::array<float, static_cast<std::size_t>(kStreamBlockFrames) * 2U> samples{};
+};
+
+static_assert(std::is_trivially_copyable_v<StreamBlock>);
+
+}  // namespace
+
 struct TrackPlayer::Impl {
     WavReader reader;
+    AudioBuffer streamScratch;
+    core::FrameIndex timelineStartFrame{0};
     core::FrameIndex sourceStartFrame{0};
-    AudioBuffer source;
+    core::FrameCount sourceLength{0};
+    core::FrameIndex producerTimeline{0};
+    std::uint64_t producerGeneration{0};
+    core::RingBuffer<StreamBlock, kStreamBlockCount> blocks;
+    std::optional<StreamBlock> currentBlock;
+    std::atomic<core::FrameIndex> requestedTimeline{0};
+    std::atomic<std::uint64_t> requestedGeneration{0};
+    core::FrameIndex expectedRenderTimeline{0};
+    core::FrameRange loopRange{};
+    bool loopEnabled{false};
     std::atomic<float> lastPeak{0.0F};
     std::atomic<bool> underrun{false};
 };
@@ -20,11 +49,18 @@ TrackPlayer::TrackPlayer() : impl_{std::make_unique<Impl>()} {}
 TrackPlayer::~TrackPlayer() = default;
 
 core::Status TrackPlayer::setSource(hal::StorageInterface& storage, const core::Path& path) {
-    impl_->source = AudioBuffer{};
+    impl_->currentBlock.reset();
+    impl_->timelineStartFrame = 0;
     impl_->sourceStartFrame = 0;
+    impl_->sourceLength = 0;
     impl_->lastPeak.store(0.0F, std::memory_order_relaxed);
     impl_->underrun.store(false, std::memory_order_relaxed);
-    return impl_->reader.open(storage, path);
+    if (auto status = impl_->reader.open(storage, path); !status) {
+        return status;
+    }
+    impl_->streamScratch =
+        AudioBuffer{impl_->reader.metadata().format.channels, kStreamBlockFrames};
+    return core::success();
 }
 
 void TrackPlayer::clearSource() noexcept { impl_->reader.close(); }
@@ -36,54 +72,147 @@ core::Status TrackPlayer::prefetch(core::FrameIndex timelinePosition, core::Fram
         return core::makeError(core::ErrorCode::InvalidState, "track has no source");
     }
 
-    impl_->sourceStartFrame = timelinePosition;
+    impl_->timelineStartFrame = timelinePosition;
     const WavMetadata& metadata = impl_->reader.metadata();
     const core::FrameIndex sourceStart = std::clamp(sourceRange.start, core::FrameIndex{0},
                                                     metadata.frameCount);
     const core::FrameCount availableFrames = metadata.frameCount - sourceStart;
     const core::FrameCount framesToLoad =
         sourceRange.length > 0 ? std::min(sourceRange.length, availableFrames) : availableFrames;
-    impl_->source = AudioBuffer{metadata.format.channels, framesToLoad};
-    impl_->source.setFrameCount(framesToLoad);
-
-    if (auto status = impl_->reader.seek(sourceStart); !status) {
+    impl_->sourceStartFrame = sourceStart;
+    impl_->sourceLength = framesToLoad;
+    impl_->producerTimeline = timelinePosition;
+    impl_->expectedRenderTimeline = timelinePosition;
+    impl_->requestedTimeline.store(timelinePosition, std::memory_order_relaxed);
+    impl_->requestedGeneration.store(0, std::memory_order_relaxed);
+    impl_->producerGeneration = 0;
+    impl_->currentBlock.reset();
+    if (auto status = impl_->reader.seek(impl_->sourceStartFrame); !status) {
         return status;
     }
+    (void)stream();
+    return core::success();
+}
 
-    core::FrameCount loaded = 0;
-    while (loaded < framesToLoad) {
-        AudioBuffer chunk{metadata.format.channels, framesToLoad - loaded};
-        auto read = impl_->reader.read(chunk);
-        if (!read) {
-            return read.error();
+bool TrackPlayer::stream() {
+    if (!hasSource()) {
+        return false;
+    }
+
+    const std::uint64_t requestedGeneration =
+        impl_->requestedGeneration.load(std::memory_order_acquire);
+    if (requestedGeneration != impl_->producerGeneration) {
+        const core::FrameIndex requested = impl_->requestedTimeline.load(std::memory_order_acquire);
+        const core::FrameIndex relative = std::clamp<core::FrameIndex>(
+            requested - impl_->timelineStartFrame, 0, impl_->sourceLength);
+        if (auto status = impl_->reader.seek(impl_->sourceStartFrame + relative); !status) {
+            impl_->underrun.store(true, std::memory_order_release);
+            return false;
         }
-        if (read.value() == 0) {
+        impl_->producerTimeline = impl_->timelineStartFrame + relative;
+        impl_->producerGeneration = requestedGeneration;
+    }
+
+    bool produced = false;
+    const core::FrameIndex timelineEnd = impl_->timelineStartFrame + impl_->sourceLength;
+    while (impl_->blocks.size() < impl_->blocks.capacity()) {
+        if (impl_->producerTimeline >= timelineEnd) {
+            if (impl_->loopEnabled && impl_->loopRange.length > 0 &&
+                impl_->producerTimeline < impl_->loopRange.end()) {
+                StreamBlock silence;
+                silence.timelineStart = impl_->producerTimeline;
+                silence.frames = std::min(kStreamBlockFrames,
+                                           impl_->loopRange.end() - impl_->producerTimeline);
+                silence.generation = impl_->producerGeneration;
+                silence.channels = impl_->reader.metadata().format.channels;
+                if (!impl_->blocks.push(silence)) {
+                    break;
+                }
+                impl_->producerTimeline += silence.frames;
+                produced = true;
+                continue;
+            }
+            const core::FrameIndex loopedStart =
+                std::max(impl_->loopRange.start, impl_->timelineStartFrame);
+            if (!impl_->loopEnabled || impl_->loopRange.length <= 0 ||
+                loopedStart >= impl_->loopRange.end() || loopedStart >= timelineEnd) {
+                break;
+            }
+            impl_->producerTimeline = loopedStart;
+            const core::FrameIndex relative = loopedStart - impl_->timelineStartFrame;
+            if (auto status = impl_->reader.seek(impl_->sourceStartFrame + relative); !status) {
+                impl_->underrun.store(true, std::memory_order_release);
+                break;
+            }
+        }
+        const core::FrameCount wanted =
+            std::min({kStreamBlockFrames, timelineEnd - impl_->producerTimeline,
+                      impl_->loopEnabled && impl_->loopRange.length > 0
+                          ? std::max<core::FrameCount>(0,
+                                impl_->loopRange.end() - impl_->producerTimeline)
+                          : kStreamBlockFrames});
+        if (wanted <= 0) {
+            impl_->producerTimeline = timelineEnd;
+            continue;
+        }
+        impl_->streamScratch.setFrameCount(wanted);
+        auto read = impl_->reader.read(impl_->streamScratch);
+        if (!read || read.value() == 0) {
+            if (!read) {
+                impl_->underrun.store(true, std::memory_order_release);
+            }
             break;
         }
 
-        for (core::ChannelCount channel = 0; channel < metadata.format.channels; ++channel) {
-            auto destination = impl_->source.channel(channel);
-            auto source = chunk.channel(channel);
-            std::copy(source.begin(), source.end(),
-                      destination.begin() + static_cast<std::ptrdiff_t>(loaded));
+        StreamBlock block;
+        block.timelineStart = impl_->producerTimeline;
+        block.frames = read.value();
+        block.generation = impl_->producerGeneration;
+        block.channels = impl_->streamScratch.channelCount();
+        for (core::ChannelCount channel = 0; channel < block.channels; ++channel) {
+            const auto samples = impl_->streamScratch.channel(channel);
+            std::copy(samples.begin(), samples.end(),
+                      block.samples.begin() + static_cast<std::ptrdiff_t>(channel) *
+                                                  kStreamBlockFrames);
         }
-        loaded += read.value();
+        if (!impl_->blocks.push(block)) {
+            break;
+        }
+        impl_->producerTimeline += read.value();
+        produced = true;
     }
+    return produced;
+}
 
-    impl_->source.setFrameCount(loaded);
-    return core::success();
+void TrackPlayer::setLoop(core::FrameRange range, bool enabled) noexcept {
+    impl_->loopRange = range;
+    impl_->loopEnabled = enabled;
+}
+
+void TrackPlayer::requestStreamPosition(core::FrameIndex timelinePosition) noexcept {
+    impl_->requestedTimeline.store(timelinePosition, std::memory_order_relaxed);
+    impl_->requestedGeneration.fetch_add(1, std::memory_order_release);
+    impl_->currentBlock.reset();
+    impl_->expectedRenderTimeline = timelinePosition;
 }
 
 void TrackPlayer::render(AudioBuffer& destination,
                          core::FrameIndex timelinePosition,
                          core::FrameCount frames) noexcept {
     destination.setFrameCount(frames);
-    if (impl_->source.frameCount() == 0 || destination.channelCount() == 0) {
+    if (impl_->sourceLength == 0 || destination.channelCount() == 0) {
         impl_->lastPeak.store(0.0F, std::memory_order_relaxed);
         return;
     }
 
-    const core::FrameIndex relativeStart = timelinePosition - impl_->sourceStartFrame;
+    if (timelinePosition != impl_->expectedRenderTimeline) {
+        // A loop wrap is already represented in queue order by the producer.
+        // Explicit seeks call requestStreamPosition() and change generation.
+        impl_->currentBlock.reset();
+    }
+    impl_->expectedRenderTimeline = timelinePosition + frames;
+    const std::uint64_t generation =
+        impl_->requestedGeneration.load(std::memory_order_acquire);
     const float gain = mix_.gain.load(std::memory_order_relaxed);
     const float pan = std::clamp(mix_.pan.load(std::memory_order_relaxed), -1.0F, 1.0F);
     const bool muted = mix_.muted.load(std::memory_order_relaxed);
@@ -95,15 +224,30 @@ void TrackPlayer::render(AudioBuffer& destination,
 
     float peak = 0.0F;
     for (core::FrameCount frame = 0; frame < frames; ++frame) {
-        const core::FrameIndex sourceFrame = relativeStart + frame;
-        if (sourceFrame < 0 || sourceFrame >= impl_->source.frameCount()) {
+        const core::FrameIndex desired = timelinePosition + frame;
+        while (!impl_->currentBlock ||
+               desired >= impl_->currentBlock->timelineStart + impl_->currentBlock->frames ||
+               impl_->currentBlock->generation != generation) {
+            impl_->currentBlock = impl_->blocks.pop();
+            if (!impl_->currentBlock) {
+                break;
+            }
+        }
+        if (!impl_->currentBlock || impl_->currentBlock->generation != generation ||
+            desired < impl_->currentBlock->timelineStart) {
+            if (desired >= impl_->timelineStartFrame &&
+                desired < impl_->timelineStartFrame + impl_->sourceLength) {
+                impl_->underrun.store(true, std::memory_order_relaxed);
+            }
             continue;
         }
 
-        const std::size_t index = static_cast<std::size_t>(sourceFrame);
-        const float left = impl_->source.channel(0)[index];
-        const float right =
-            impl_->source.channel(impl_->source.channelCount() > 1 ? 1 : 0)[index];
+        const std::size_t index = static_cast<std::size_t>(desired - impl_->currentBlock->timelineStart);
+        const float left = impl_->currentBlock->samples[index];
+        const std::size_t rightOffset = impl_->currentBlock->channels > 1
+                                            ? static_cast<std::size_t>(kStreamBlockFrames)
+                                            : 0U;
+        const float right = impl_->currentBlock->samples[rightOffset + index];
 
         const float mixedLeft = muted ? 0.0F : left * gain * leftPan;
         const float mixedRight = muted ? 0.0F : right * gain * rightPan;
@@ -113,9 +257,6 @@ void TrackPlayer::render(AudioBuffer& destination,
         peak = std::max(peak, std::max(std::fabs(mixedLeft), std::fabs(mixedRight)));
     }
 
-    if (relativeStart + frames > impl_->source.frameCount()) {
-        impl_->underrun.store(true, std::memory_order_relaxed);
-    }
     impl_->lastPeak.store(peak, std::memory_order_relaxed);
 }
 

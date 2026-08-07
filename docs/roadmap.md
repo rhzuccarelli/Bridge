@@ -50,22 +50,25 @@ Phase 6 (it needs libgpiod); its pin map and decoding requirements are recorded.
 
 ## Phase 3 — Project manager
 
+**Complete.** The metadata parser is a small purpose-built implementation with no
+third-party dependency.
+
 `Project`, `Track`, `Timeline`, `Clip`, `UndoStack`, `MetadataSerializer`,
 `ProjectManager`. Create/open/save/close, atomic metadata writes, and one test per
 command asserting `apply` → `revert` restores the exact prior state.
 
-*Needs a decision first: hand-rolled JSON vs a library — see architecture §Open
-questions.*
-
 ## Phase 4 — Audio engine
+
+**Complete.**
 
 Multi-track playback: gain, mute, solo, pan, loop, seeking, synchronisation. Streaming
 thread with per-track ring buffers, scene swap at block boundaries, meters and
 position posted as events. No DSP effects, no GUI dependencies. Punch-in recording
 stays reserved, not implemented.
 
-*Needs a decision first: `Record` semantics — Portastudio arm-then-play, or
-field-recorder roll-immediately.*
+`Record` uses the confirmed Portastudio model: it arms a track; `Play` begins the
+recording pass. Phase 4 reserves and tests that state transition only. Audio capture
+and punch-in writing remain future work after the input backend exists.
 
 ## Phase 5 — ALSA backend
 
