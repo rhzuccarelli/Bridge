@@ -39,7 +39,8 @@ Phase 6 (it needs libgpiod); its pin map and decoding requirements are recorded.
 
 `WavReader`, `WavWriter`, `WavMetadata`, `SampleConverter`.
 
-- PCM, 24-bit, 48 kHz, mono and stereo.
+- PCM, 24-bit, 48 kHz, one through twelve interleaved channels (mono through six
+  TP-7 stereo pairs).
 - Proper RIFF chunk-list parsing (the TP-7 and most recorders emit extra chunks).
 - Streaming only — nothing loads a whole file.
 - Tests against `MemoryStorage` with hand-built files, including deliberately
@@ -65,6 +66,10 @@ Multi-track playback: gain, mute, solo, pan, loop, seeking, synchronisation. Str
 thread with per-track ring buffers, scene swap at block boundaries, meters and
 position posted as events. No DSP effects, no GUI dependencies. Punch-in recording
 stays reserved, not implemented.
+
+The product model now supports multiple decks with exactly one active for playback.
+Inactive decks are source libraries. Clips route a mono channel or adjacent stereo
+pair from an immutable multichannel TP-7 WAV into one of the active deck's six lanes.
 
 `Record` uses the confirmed Portastudio model: it arms a track; `Play` begins the
 recording pass. Phase 4 reserves and tests that state transition only. Audio capture

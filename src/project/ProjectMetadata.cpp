@@ -56,7 +56,10 @@ void appendClip(std::string& out, const Clip& clip, bool trailingComma) {
     appendLine(out, 5, "\"timelinePosition\": " + std::to_string(clip.timelinePosition) + ",");
     appendLine(out, 5, "\"gain\": " + std::to_string(clip.gain) + ",");
     appendLine(out, 5, "\"fadeInFrames\": " + std::to_string(clip.fadeInFrames) + ",");
-    appendLine(out, 5, "\"fadeOutFrames\": " + std::to_string(clip.fadeOutFrames));
+    appendLine(out, 5, "\"fadeOutFrames\": " + std::to_string(clip.fadeOutFrames) + ",");
+    appendLine(out, 5, "\"sourceChannel\": " + std::to_string(clip.sourceChannel) + ",");
+    appendLine(out, 5,
+               "\"sourceChannelCount\": " + std::to_string(clip.sourceChannelCount));
     appendLine(out, 4, trailingComma ? "}," : "}");
 }
 
@@ -84,6 +87,7 @@ std::string serialiseProject(const Project& project) {
     appendLine(out, 0, "{");
     appendLine(out, 1, "\"version\": " + std::to_string(kMetadataSchemaVersion) + ",");
     appendLine(out, 1, "\"name\": \"" + escapeJson(project.name()) + "\",");
+    appendLine(out, 1, "\"activeDeckName\": \"" + escapeJson(project.activeDeck().name) + "\",");
     appendLine(out, 1, "\"sampleRate\": " + std::to_string(timeline.sampleRate) + ",");
     appendLine(out, 1, "\"loopRange\": {");
     appendLine(out, 2, "\"start\": " + std::to_string(timeline.loopRange.start) + ",");
@@ -94,6 +98,29 @@ std::string serialiseProject(const Project& project) {
     appendLine(out, 1, "\"tracks\": [");
     for (std::size_t i = 0; i < timeline.tracks.size(); ++i) {
         appendTrack(out, timeline.tracks[i], i + 1 < timeline.tracks.size());
+    }
+    appendLine(out, 1, "],");
+    appendLine(out, 1, "\"libraryDecks\": [");
+    bool firstLibrary = true;
+    for (const Deck& deck : project.decks()) {
+        if (deck.id == project.activeDeckId()) continue;
+        if (!firstLibrary) appendLine(out, 2, ",");
+        firstLibrary = false;
+        appendLine(out, 2, "{");
+        appendLine(out, 3, "\"name\": \"" + escapeJson(deck.name) + "\",");
+        appendLine(out, 3, "\"sampleRate\": " + std::to_string(deck.timeline.sampleRate) + ",");
+        appendLine(out, 3, "\"loopRange\": {");
+        appendLine(out, 4, "\"start\": " + std::to_string(deck.timeline.loopRange.start) + ",");
+        appendLine(out, 4, "\"length\": " + std::to_string(deck.timeline.loopRange.length));
+        appendLine(out, 3, "},");
+        appendLine(out, 3, "\"loopEnabled\": " +
+                              std::string{deck.timeline.loopEnabled ? "true" : "false"} + ",");
+        appendLine(out, 3, "\"tracks\": [");
+        for (std::size_t i = 0; i < deck.timeline.tracks.size(); ++i) {
+            appendTrack(out, deck.timeline.tracks[i], i + 1 < deck.timeline.tracks.size());
+        }
+        appendLine(out, 3, "]");
+        appendLine(out, 2, "}");
     }
     appendLine(out, 1, "]");
     appendLine(out, 0, "}");
@@ -144,6 +171,7 @@ public:
         bool haveLoopRange = false;
         bool haveLoopEnabled = false;
         bool haveTracks = false;
+        bool haveLibraryDecks = false;
 
         while (true) {
             skipWhitespace();
@@ -169,6 +197,10 @@ public:
                 if (!parsed) return parsed.error();
                 name = std::move(parsed).value();
                 haveName = true;
+            } else if (key.value() == "activeDeckName") {
+                auto parsed = parseString();
+                if (!parsed) return parsed.error();
+                project.mutableActiveDeck().name = std::move(parsed).value();
             } else if (key.value() == "sampleRate") {
                 auto parsed = parseUnsigned();
                 if (!parsed) return parsed.error();
@@ -189,6 +221,14 @@ public:
                 if (!parsed) return parsed.error();
                 project.mutableTimeline().tracks = std::move(parsed).value();
                 haveTracks = true;
+            } else if (key.value() == "libraryDecks") {
+                auto parsed = parseDecks();
+                if (!parsed) return parsed.error();
+                for (Deck& deck : parsed.value()) {
+                    Deck& added = project.addDeck(std::move(deck.name));
+                    added.timeline = std::move(deck.timeline);
+                }
+                haveLibraryDecks = true;
             } else {
                 return invalid("unexpected key");
             }
@@ -210,12 +250,21 @@ public:
         if (version > kMetadataSchemaVersion) {
             return core::makeError(core::ErrorCode::UnsupportedFormat, "metadata schema too new");
         }
+        if (version >= 2 && !haveLibraryDecks) {
+            return invalid("missing deck metadata");
+        }
 
         project.setName(std::move(name));
-        for (core::TrackId i = 0; i < maxTrackId(project.mutableTimeline().tracks); ++i) {
+        core::TrackId highestTrackId = 0;
+        core::ClipId highestClipId = 0;
+        for (const Deck& deck : project.decks()) {
+            highestTrackId = std::max(highestTrackId, maxTrackId(deck.timeline.tracks));
+            highestClipId = std::max(highestClipId, maxClipId(deck.timeline.tracks));
+        }
+        for (core::TrackId i = 0; i < highestTrackId; ++i) {
             (void)project.allocateTrackId();
         }
-        for (core::ClipId i = 0; i < maxClipId(project.mutableTimeline().tracks); ++i) {
+        for (core::ClipId i = 0; i < highestClipId; ++i) {
             (void)project.allocateClipId();
         }
         project.markSaved();
@@ -428,6 +477,14 @@ private:
                 if (!value) return value.error();
                 clip.fadeOutFrames = value.value();
                 haveFadeOut = true;
+            } else if (key.value() == "sourceChannel") {
+                auto value = parseInteger<core::ChannelCount>();
+                if (!value) return value.error();
+                clip.sourceChannel = value.value();
+            } else if (key.value() == "sourceChannelCount") {
+                auto value = parseInteger<core::ChannelCount>();
+                if (!value) return value.error();
+                clip.sourceChannelCount = value.value();
             } else {
                 return invalid("unexpected clip key");
             }
@@ -441,6 +498,10 @@ private:
         if (!haveId || !haveSourceFile || !haveSourceRange || !haveTimelinePosition || !haveGain ||
             !haveFadeIn || !haveFadeOut) {
             return invalid("incomplete clip");
+        }
+        if ((clip.sourceChannelCount != 1 && clip.sourceChannelCount != 2) ||
+            clip.sourceChannel >= 12 || clip.sourceChannelCount > 12 - clip.sourceChannel) {
+            return invalid("invalid clip source channels");
         }
         return clip;
     }
@@ -553,6 +614,76 @@ private:
             return invalid("expected ',' or ']'");
         }
         return tracks;
+    }
+
+    core::Result<Deck> parseDeck() {
+        if (!consume('{')) return invalid("expected deck object");
+        Deck deck;
+        bool haveName = false;
+        bool haveSampleRate = false;
+        bool haveLoopRange = false;
+        bool haveLoopEnabled = false;
+        bool haveTracks = false;
+        while (true) {
+            skipWhitespace();
+            if (consume('}')) break;
+            auto key = parseString();
+            if (!key) return key.error();
+            if (!consume(':')) return invalid("expected ':'");
+            if (key.value() == "name") {
+                auto value = parseString();
+                if (!value) return value.error();
+                deck.name = std::move(value).value();
+                haveName = true;
+            } else if (key.value() == "sampleRate") {
+                auto value = parseUnsigned();
+                if (!value) return value.error();
+                deck.timeline.sampleRate = value.value();
+                haveSampleRate = true;
+            } else if (key.value() == "loopRange") {
+                auto value = parseFrameRange();
+                if (!value) return value.error();
+                deck.timeline.loopRange = value.value();
+                haveLoopRange = true;
+            } else if (key.value() == "loopEnabled") {
+                auto value = parseBool();
+                if (!value) return value.error();
+                deck.timeline.loopEnabled = value.value();
+                haveLoopEnabled = true;
+            } else if (key.value() == "tracks") {
+                auto value = parseTracks();
+                if (!value) return value.error();
+                deck.timeline.tracks = std::move(value).value();
+                haveTracks = true;
+            } else {
+                return invalid("unexpected deck key");
+            }
+            skipWhitespace();
+            if (consume(',')) continue;
+            if (peek() == '}') continue;
+            return invalid("expected ',' or '}'");
+        }
+        if (!haveName || !haveSampleRate || !haveLoopRange || !haveLoopEnabled || !haveTracks) {
+            return invalid("incomplete deck");
+        }
+        return deck;
+    }
+
+    core::Result<std::vector<Deck>> parseDecks() {
+        if (!consume('[')) return invalid("expected decks array");
+        std::vector<Deck> decks;
+        while (true) {
+            skipWhitespace();
+            if (consume(']')) break;
+            auto deck = parseDeck();
+            if (!deck) return deck.error();
+            decks.push_back(std::move(deck).value());
+            skipWhitespace();
+            if (consume(',')) continue;
+            if (peek() == ']') continue;
+            return invalid("expected ',' or ']'");
+        }
+        return decks;
     }
 
     static core::TrackId maxTrackId(const std::vector<Track>& tracks) noexcept {

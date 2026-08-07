@@ -39,7 +39,10 @@ public:
 
     /// Binds this player to an audio file.  Called from the UI/loader thread
     /// while the transport is stopped, or on a background load for a new clip.
-    [[nodiscard]] core::Status setSource(hal::StorageInterface& storage, const core::Path& path);
+    [[nodiscard]] core::Status setSource(hal::StorageInterface& storage,
+                                         const core::Path& path,
+                                         core::ChannelCount sourceChannel = 0,
+                                         core::ChannelCount sourceChannelCount = 2);
 
     void clearSource() noexcept;
     [[nodiscard]] bool hasSource() const noexcept;

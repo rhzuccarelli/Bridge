@@ -35,6 +35,8 @@ struct EngineTrack {
     float pan{0.0F};
     bool muted{false};
     bool soloed{false};
+    core::ChannelCount sourceChannel{0};  ///< Zero-based first source channel.
+    core::ChannelCount sourceChannelCount{2};  ///< Mono (1) or stereo pair (2).
 };
 
 struct EngineScene {

@@ -43,12 +43,17 @@ struct TrackPlayer::Impl {
     bool loopEnabled{false};
     std::atomic<float> lastPeak{0.0F};
     std::atomic<bool> underrun{false};
+    core::ChannelCount sourceChannel{0};
+    core::ChannelCount sourceChannelCount{2};
 };
 
 TrackPlayer::TrackPlayer() : impl_{std::make_unique<Impl>()} {}
 TrackPlayer::~TrackPlayer() = default;
 
-core::Status TrackPlayer::setSource(hal::StorageInterface& storage, const core::Path& path) {
+core::Status TrackPlayer::setSource(hal::StorageInterface& storage,
+                                    const core::Path& path,
+                                    core::ChannelCount sourceChannel,
+                                    core::ChannelCount sourceChannelCount) {
     impl_->currentBlock.reset();
     impl_->timelineStartFrame = 0;
     impl_->sourceStartFrame = 0;
@@ -58,6 +63,15 @@ core::Status TrackPlayer::setSource(hal::StorageInterface& storage, const core::
     if (auto status = impl_->reader.open(storage, path); !status) {
         return status;
     }
+    const core::ChannelCount available = impl_->reader.metadata().format.channels;
+    if ((sourceChannelCount != 1 && sourceChannelCount != 2) || sourceChannel >= available ||
+        sourceChannelCount > available - sourceChannel) {
+        impl_->reader.close();
+        return core::makeError(core::ErrorCode::InvalidArgument,
+                               "source channel selection is outside WAV channel range");
+    }
+    impl_->sourceChannel = sourceChannel;
+    impl_->sourceChannelCount = sourceChannelCount;
     impl_->streamScratch =
         AudioBuffer{impl_->reader.metadata().format.channels, kStreamBlockFrames};
     return core::success();
@@ -124,7 +138,7 @@ bool TrackPlayer::stream() {
                 silence.frames = std::min(kStreamBlockFrames,
                                            impl_->loopRange.end() - impl_->producerTimeline);
                 silence.generation = impl_->producerGeneration;
-                silence.channels = impl_->reader.metadata().format.channels;
+                silence.channels = impl_->sourceChannelCount;
                 if (!impl_->blocks.push(silence)) {
                     break;
                 }
@@ -168,9 +182,9 @@ bool TrackPlayer::stream() {
         block.timelineStart = impl_->producerTimeline;
         block.frames = read.value();
         block.generation = impl_->producerGeneration;
-        block.channels = impl_->streamScratch.channelCount();
+        block.channels = impl_->sourceChannelCount;
         for (core::ChannelCount channel = 0; channel < block.channels; ++channel) {
-            const auto samples = impl_->streamScratch.channel(channel);
+            const auto samples = impl_->streamScratch.channel(impl_->sourceChannel + channel);
             std::copy(samples.begin(), samples.end(),
                       block.samples.begin() + static_cast<std::ptrdiff_t>(channel) *
                                                   kStreamBlockFrames);

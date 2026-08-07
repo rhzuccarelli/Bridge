@@ -204,6 +204,21 @@ AW_TEST(Project, HandsOutUniqueIdentifiers) {
     AW_CHECK_EQ(project.allocateClipId(), core::ClipId{1});
 }
 
+AW_TEST(Project, OnlyTheSelectedDeckIsActive) {
+    project::Project project{"Set", "/projects/Set"};
+    const project::DeckId deckA = project.activeDeckId();
+    project::Deck& deckB = project.addDeck("Deck B");
+    const project::DeckId deckBId = deckB.id;
+    deckB.timeline.loopEnabled = true;
+
+    AW_CHECK_EQ(project.activeDeck().name, std::string{"Deck A"});
+    AW_REQUIRE(project.setActiveDeck(deckBId));
+    AW_CHECK_EQ(project.activeDeck().name, std::string{"Deck B"});
+    AW_CHECK(project.timeline().loopEnabled);
+    AW_REQUIRE(project.setActiveDeck(deckA));
+    AW_CHECK(!project.timeline().loopEnabled);
+}
+
 AW_TEST(MetadataSerializer, SavesAndLoadsProjectState) {
     awtest::MemoryStorage storage;
     project::Project project{"Session A", "/projects/SessionA"};
@@ -228,9 +243,19 @@ AW_TEST(MetadataSerializer, SavesAndLoadsProjectState) {
     clip.gain = 0.5F;
     clip.fadeInFrames = 12;
     clip.fadeOutFrames = 24;
+    clip.sourceChannel = 8;
+    clip.sourceChannelCount = 2;
     track.clips.push_back(std::move(clip));
 
     project.mutableTimeline().tracks.push_back(std::move(track));
+
+    project::Deck& library = project.addDeck("Deck B");
+    library.timeline.sampleRate = 48000;
+    project::Track libraryTrack;
+    libraryTrack.id = project.allocateTrackId();
+    libraryTrack.name = "Library pair 1";
+    library.timeline.tracks.push_back(std::move(libraryTrack));
+    AW_REQUIRE(project.setActiveDeck(library.id));
 
     AW_REQUIRE(project::MetadataSerializer::save(storage, project));
 
@@ -238,15 +263,21 @@ AW_TEST(MetadataSerializer, SavesAndLoadsProjectState) {
     AW_REQUIRE(loaded.hasValue());
     AW_CHECK_EQ(loaded.value().name(), std::string{"Session A"});
     AW_CHECK_EQ(loaded.value().timeline().sampleRate, core::SampleRate{48000});
-    AW_CHECK(loaded.value().timeline().loopEnabled);
-    AW_CHECK_EQ(loaded.value().timeline().loopRange.start, core::FrameIndex{128});
-    AW_CHECK_EQ(loaded.value().timeline().loopRange.length, core::FrameCount{256});
+    AW_CHECK(loaded.value().decks()[1].timeline.loopEnabled);
+    AW_CHECK_EQ(loaded.value().decks()[1].timeline.loopRange.start, core::FrameIndex{128});
+    AW_CHECK_EQ(loaded.value().decks()[1].timeline.loopRange.length, core::FrameCount{256});
     AW_CHECK_EQ(loaded.value().timeline().tracks.size(), std::size_t{1});
-    AW_CHECK_EQ(loaded.value().timeline().tracks[0].name, std::string{"Vocals"});
-    AW_CHECK_EQ(loaded.value().timeline().tracks[0].clips.size(), std::size_t{1});
-    AW_CHECK_EQ(loaded.value().timeline().tracks[0].clips[0].sourceFile, std::string{"take01.wav"});
-    AW_CHECK_EQ(loaded.value().timeline().tracks[0].clips[0].timelinePosition,
+    AW_CHECK_EQ(loaded.value().activeDeck().name, std::string{"Deck B"});
+    AW_CHECK_EQ(loaded.value().timeline().tracks[0].name, std::string{"Library pair 1"});
+    AW_CHECK_EQ(loaded.value().decks()[1].timeline.tracks[0].clips.size(), std::size_t{1});
+    AW_CHECK_EQ(loaded.value().decks()[1].timeline.tracks[0].clips[0].sourceFile,
+                std::string{"take01.wav"});
+    AW_CHECK_EQ(loaded.value().decks()[1].timeline.tracks[0].clips[0].timelinePosition,
                 core::FrameIndex{1024});
+    AW_CHECK_EQ(loaded.value().decks()[1].timeline.tracks[0].clips[0].sourceChannel,
+                core::ChannelCount{8});
+    AW_CHECK_EQ(loaded.value().decks().size(), std::size_t{2});
+    AW_CHECK_EQ(loaded.value().decks()[1].name, std::string{"Deck A"});
 }
 
 AW_TEST(ProjectManager, CreateSaveOpenAndListProjects) {
@@ -310,4 +341,25 @@ AW_TEST(ProjectManager, BuildSceneFlattensTimelineClipsIntoEngineTracks) {
     AW_CHECK_EQ(scene.tracks[0].gain, 0.375F);
     AW_CHECK_EQ(scene.tracks[0].pan, -0.25F);
     AW_CHECK(scene.tracks[0].soloed);
+}
+
+AW_TEST(ProjectManager, BuildSceneIncludesOnlyTheActiveDeck) {
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+    AW_REQUIRE(manager.createProject("Deck selection"));
+
+    project::Project& editable = const_cast<project::Project&>(manager.project());
+    editable.mutableTimeline().tracks[0].clips.push_back(
+        project::Clip{1, "active.wav", core::FrameRange{0, 10}, 0});
+    project::Deck& library = editable.addDeck("Library");
+    project::Track sourceTrack;
+    sourceTrack.id = editable.allocateTrackId();
+    sourceTrack.clips.push_back(project::Clip{2, "silent.wav", core::FrameRange{0, 10}, 0});
+    library.timeline.tracks.push_back(std::move(sourceTrack));
+
+    const audio::EngineScene scene = manager.buildScene();
+    AW_CHECK_EQ(scene.tracks.size(), std::size_t{1});
+    AW_CHECK_EQ(scene.tracks[0].audioFile,
+                core::Path{"/projects/Deck selection/audio/active.wav"});
 }

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "aw/core/Types.hpp"
-#include "aw/project/Timeline.hpp"
+#include "aw/core/Result.hpp"
+#include "aw/project/Deck.hpp"
 #include "aw/storage/ProjectPaths.hpp"
 
 namespace aw::project {
@@ -24,11 +26,21 @@ public:
 
     [[nodiscard]] const storage::ProjectPaths& paths() const noexcept { return paths_; }
 
-    [[nodiscard]] const Timeline& timeline() const noexcept { return timeline_; }
+    [[nodiscard]] const std::vector<Deck>& decks() const noexcept { return decks_; }
+
+    [[nodiscard]] const Deck& activeDeck() const noexcept { return decks_[activeDeckIndex_]; }
+    [[nodiscard]] Deck& mutableActiveDeck() noexcept { return decks_[activeDeckIndex_]; }
+    [[nodiscard]] DeckId activeDeckId() const noexcept { return activeDeck().id; }
+    [[nodiscard]] core::Status setActiveDeck(DeckId id) noexcept;
+    [[nodiscard]] Deck& addDeck(std::string name);
+
+    /// Compatibility aliases for editing commands: a timeline without an
+    /// explicit deck always means the one active for playback.
+    [[nodiscard]] const Timeline& timeline() const noexcept { return activeDeck().timeline; }
 
     /// Mutable access is intentionally narrow: only the command layer and the
     /// loader call this, and both do so while holding responsibility for undo.
-    [[nodiscard]] Timeline& mutableTimeline() noexcept { return timeline_; }
+    [[nodiscard]] Timeline& mutableTimeline() noexcept { return mutableActiveDeck().timeline; }
 
     [[nodiscard]] bool isModified() const noexcept { return modified_; }
     void markModified() noexcept { modified_ = true; }
@@ -46,7 +58,9 @@ public:
 private:
     std::string name_;
     storage::ProjectPaths paths_;
-    Timeline timeline_;
+    std::vector<Deck> decks_;
+    std::size_t activeDeckIndex_{0};
+    DeckId lastDeckId_{0};
     bool modified_{false};
     std::uint64_t revision_{0};
     core::TrackId lastTrackId_{0};

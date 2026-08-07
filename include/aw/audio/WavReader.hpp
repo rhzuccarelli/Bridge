@@ -35,7 +35,7 @@ public:
 
     /// Opens the file and parses its header.  Fails with InvalidFormat on a
     /// malformed container, UnsupportedFormat on something well formed we do
-    /// not play (compressed, > 2 channels, unsupported bit depth).
+    /// not play (compressed, > 12 channels, unsupported bit depth).
     [[nodiscard]] core::Status open(hal::StorageInterface& storage, const core::Path& path);
 
     void close() noexcept;

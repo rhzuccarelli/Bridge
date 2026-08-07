@@ -159,9 +159,9 @@ core::Result<WavMetadata> parseHeader(hal::FileHandle& file) {
             const std::uint16_t blockAlign = little<std::uint16_t>(fmt, 12);
             const std::uint16_t bitsPerSample = little<std::uint16_t>(fmt, 14);
 
-            if (channels == 0 || channels > 2) {
+            if (channels == 0 || channels > 12) {
                 return core::makeError(core::ErrorCode::UnsupportedFormat,
-                                       "only mono and stereo WAV are supported");
+                                       "WAV must contain between 1 and 12 channels");
             }
             if (sampleRate == 0) {
                 return core::makeError(core::ErrorCode::InvalidFormat, "zero sample rate");
@@ -241,7 +241,7 @@ core::Result<WavMetadata> parseHeader(hal::FileHandle& file) {
     metadata.isNativeFormat =
         metadata.format.sampleRate == core::kNativeFormat.sampleRate &&
         metadata.format.sampleFormat == core::kNativeFormat.sampleFormat &&
-        metadata.format.channels <= core::kNativeFormat.channels;
+        metadata.format.channels <= 12;
     return metadata;
 }
 

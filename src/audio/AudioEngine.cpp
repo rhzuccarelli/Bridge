@@ -146,7 +146,9 @@ core::Status AudioEngine::setScene(const EngineScene& scene) {
 
     for (const EngineTrack& track : scene.tracks) {
         auto player = std::make_unique<TrackPlayer>();
-        if (auto status = player->setSource(storage_, track.audioFile); !status) {
+        if (auto status = player->setSource(storage_, track.audioFile, track.sourceChannel,
+                                            track.sourceChannelCount);
+            !status) {
             return status;
         }
         player->mix().gain.store(track.gain, std::memory_order_relaxed);

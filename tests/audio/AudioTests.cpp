@@ -102,6 +102,16 @@ std::vector<std::byte> makeRepeatedStereo24Data(std::array<float, 2> frame,
     return data;
 }
 
+std::vector<std::byte> makeInterleaved24Data(std::span<const float> samples) {
+    std::vector<std::byte> data;
+    data.reserve(samples.size() * 3U);
+    for (const float sample : samples) {
+        const auto bytes = int24Bytes(sample);
+        data.insert(data.end(), bytes.begin(), bytes.end());
+    }
+    return data;
+}
+
 std::vector<std::byte> makeWaveFile(std::vector<std::vector<std::byte>> chunks) {
     std::vector<std::byte> bytes;
     bytes.insert(bytes.end(),
@@ -410,16 +420,35 @@ AW_TEST(WavReader, StreamsStereo24SamplesAndSupportsSeek) {
     AW_CHECK(nearlyEqual(second.channel(1)[1], -0.25F));
 }
 
-AW_TEST(WavReader, RejectsUnsupportedChannelCounts) {
+AW_TEST(WavReader, RejectsMoreThanTwelveChannels) {
     awtest::MemoryStorage storage;
     storage.addFile("/projects/Take/audio/Bad.wav",
-                    makeWaveFile({makeFmtChunk(1, 3, 48000, 24),
-                                  makeChunk("data", std::vector<std::byte>(18, std::byte{0}))}));
+                    makeWaveFile({makeFmtChunk(1, 13, 48000, 24),
+                                  makeChunk("data", std::vector<std::byte>(39, std::byte{0}))}));
 
     audio::WavReader reader;
     const auto status = reader.open(storage, "/projects/Take/audio/Bad.wav");
     AW_REQUIRE(!status.hasValue());
     AW_CHECK_EQ(status.error().code(), core::ErrorCode::UnsupportedFormat);
+}
+
+AW_TEST(TrackPlayer, SelectsStereoPairFromTwelveChannelTp7Wave) {
+    awtest::MemoryStorage storage;
+    const std::array<float, 12> frame{0.1F, 0.2F, 0.3F, 0.4F, 0.5F, 0.6F,
+                                      0.7F, 0.8F, 0.9F, 1.0F, -0.9F, -0.8F};
+    storage.addFile("/projects/Take/audio/TP7.wav",
+                    makeWaveFile({makeFmtChunk(1, 12, 48000, 24),
+                                  makeChunk("acid", std::vector<std::byte>(24, std::byte{0})),
+                                  makeChunk("data", makeInterleaved24Data(frame))}));
+
+    audio::TrackPlayer player;
+    AW_REQUIRE(player.setSource(storage, "/projects/Take/audio/TP7.wav", 10, 2));
+    AW_REQUIRE(player.prefetch(0));
+    audio::AudioBuffer output{2, 1};
+    output.clear();
+    player.render(output, 0, 1);
+    AW_CHECK(nearlyEqual(output.channel(0)[0], -0.9F));
+    AW_CHECK(nearlyEqual(output.channel(1)[0], -0.8F));
 }
 
 AW_TEST(WavReader, RejectsRiffSizeBeyondPhysicalFile) {

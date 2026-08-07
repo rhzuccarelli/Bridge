@@ -188,6 +188,8 @@ audio::EngineScene ProjectManager::buildScene() const {
             engineTrack.audioFile = project_->paths().audioFile(clip.sourceFile);
             engineTrack.startFrame = clip.timelinePosition;
             engineTrack.sourceRange = clip.sourceRange;
+            engineTrack.sourceChannel = clip.sourceChannel;
+            engineTrack.sourceChannelCount = clip.sourceChannelCount;
             engineTrack.gain = track.gain * clip.gain;
             engineTrack.pan = track.pan;
             engineTrack.muted = track.muted;

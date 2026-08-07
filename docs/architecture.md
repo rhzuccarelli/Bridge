@@ -431,11 +431,18 @@ a mechanical change to three macros.
 | 48 kHz only | Removes resampling from the realtime path entirely — the thing that makes multitrack playback feasible on an ESP32-P4. Non-matching files convert once, on import. |
 | 24-bit | Matches the TP-7, so exports drop back onto the device with no conversion. |
 | 6 synchronized stereo tracks | Fixed product requirement for Bridge: twelve source channels mixed to one stereo monitor/output bus. Physical-button count does not limit project capacity. |
+| One active deck | Only one deck is handed to the realtime engine. Other decks remain silent source libraries; assigning one of their pairs creates a non-destructive clip reference, not an audio copy. |
 | Float mixing | Keeps the mixer free of format concerns; int conversion is one cheap pass in the backend, which is also where dither will live. |
 
 Options a hardware recorder does not need are options the user has to scroll past.
 
 ### WAV streaming and recovery
+
+`WavReader` accepts one through twelve interleaved PCM channels, matching TP-7 files
+that range from mono through six stereo pairs. A clip stores a zero-based first source
+channel and a width of one or two channels; mono is duplicated onto the stereo output.
+Unknown chunks such as the TP-7's `acid` chunk are preserved in the immutable source
+file and safely skipped during streaming.
 
 `WavReader` walks the RIFF chunk list through `hal::FileHandle`, validates every
 declared range against both the RIFF boundary and physical file size, and converts

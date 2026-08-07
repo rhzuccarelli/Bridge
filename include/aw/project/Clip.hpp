@@ -38,6 +38,14 @@ struct Clip {
     core::FrameCount fadeInFrames{0};
     core::FrameCount fadeOutFrames{0};
 
+    /// First interleaved channel in the source WAV (zero based).
+    /// TP-7 pairs therefore map as 0/1, 2/3, ... 10/11.
+    core::ChannelCount sourceChannel{0};
+
+    /// One for a mono lane, two for a stereo pair. The destination track is
+    /// always stereo-capable; mono is duplicated to both output channels.
+    core::ChannelCount sourceChannelCount{2};
+
     [[nodiscard]] core::FrameCount length() const noexcept { return sourceRange.length; }
     [[nodiscard]] core::FrameIndex timelineEnd() const noexcept {
         return timelinePosition + sourceRange.length;
