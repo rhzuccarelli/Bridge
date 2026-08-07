@@ -24,6 +24,29 @@
 using namespace aw;
 using namespace aw::platform;
 
+AW_TEST(AlsaPcm, ConvertsStereo48ToTp7SixChannel96) {
+    const std::array<float, 4> stereo{0.25F, -0.25F, 0.75F, -0.75F};
+    std::array<float, 24> tp7{};
+    rpi::Tp7MonitorConverterState state;
+    rpi::convertStereo48ToTp7Monitor96(stereo, tp7, state);
+
+    AW_CHECK_EQ(tp7[0], 0.0F);
+    AW_CHECK_EQ(tp7[1], 0.0F);
+    AW_CHECK_EQ(tp7[6], 0.125F);
+    AW_CHECK_EQ(tp7[7], -0.125F);
+    AW_CHECK_EQ(tp7[12], 0.25F);
+    AW_CHECK_EQ(tp7[13], -0.25F);
+    AW_CHECK_EQ(tp7[18], 0.5F);
+    AW_CHECK_EQ(tp7[19], -0.5F);
+    AW_CHECK_EQ(state.previousLeft, 0.75F);
+    AW_CHECK_EQ(state.previousRight, -0.75F);
+    for (std::size_t frame = 0; frame < 4; ++frame) {
+        for (std::size_t channel = 2; channel < 6; ++channel) {
+            AW_CHECK_EQ(tp7[frame * 6U + channel], 0.0F);
+        }
+    }
+}
+
 // --- Keyboard mapping -------------------------------------------------------
 
 AW_TEST(KeyMap, MapsTransportKeys) {

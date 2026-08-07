@@ -27,9 +27,14 @@ struct AlsaAudioOutput::Impl {
     core::AudioFormat format{core::kNativeFormat};
     core::FrameCount periodFrames{256};
     core::FrameCount hardwareBufferFrames{512};
+    core::FrameCount hardwarePeriodFrames{256};
+    core::ChannelCount hardwareChannels{2};
+    bool tp7MonitorMode{false};
     hal::AudioRenderCallback* callback{nullptr};
     snd_pcm_t* pcm{nullptr};
     std::vector<float> floatBuffer;
+    std::vector<float> hardwareFloatBuffer;
+    Tp7MonitorConverterState tp7ConverterState;
     std::vector<std::byte> packedBuffer;
     std::atomic<bool> running{false};
     std::thread thread;
@@ -72,32 +77,37 @@ core::Status AlsaAudioOutput::open(const core::AudioFormat& format,
     }
     const std::unique_ptr<snd_pcm_hw_params_t, decltype(&snd_pcm_hw_params_free)> hardware{
         hardwareRaw, &snd_pcm_hw_params_free};
-    if ((error = snd_pcm_hw_params_any(impl_->pcm, hardware.get())) < 0 ||
-        (error = snd_pcm_hw_params_set_access(impl_->pcm, hardware.get(),
-                                               SND_PCM_ACCESS_RW_INTERLEAVED)) < 0 ||
-        (error = snd_pcm_hw_params_set_format(impl_->pcm, hardware.get(),
-                                               SND_PCM_FORMAT_S24_3LE)) < 0 ||
-        (error = snd_pcm_hw_params_set_channels(impl_->pcm, hardware.get(), 2U)) < 0) {
-        core::Error result = alsaError(core::ErrorCode::UnsupportedFormat,
-                                      "configure ALSA format", error);
+    const auto configureBase = [&]() {
+        return snd_pcm_hw_params_any(impl_->pcm, hardware.get()) >= 0 &&
+               snd_pcm_hw_params_set_access(impl_->pcm, hardware.get(),
+                                             SND_PCM_ACCESS_RW_INTERLEAVED) >= 0 &&
+               snd_pcm_hw_params_set_format(impl_->pcm, hardware.get(),
+                                             SND_PCM_FORMAT_S24_3LE) >= 0 &&
+               snd_pcm_hw_params_set_rate_resample(impl_->pcm, hardware.get(), 0U) >= 0;
+    };
+    const auto configureFormat = [&](unsigned int channels, unsigned int wantedRate) {
+        if (!configureBase() ||
+            snd_pcm_hw_params_set_channels(impl_->pcm, hardware.get(), channels) < 0) {
+            return false;
+        }
+        unsigned int actualRate = wantedRate;
+        return snd_pcm_hw_params_set_rate_near(impl_->pcm, hardware.get(), &actualRate, nullptr) >= 0 &&
+               actualRate == wantedRate;
+    };
+
+    impl_->tp7MonitorMode = !configureFormat(2U, 48000U);
+    if (impl_->tp7MonitorMode && !configureFormat(6U, 96000U)) {
+        core::Error result = core::makeError(
+            core::ErrorCode::UnsupportedFormat,
+            "ALSA device supports neither 48 kHz stereo nor TP-7 96 kHz six-channel playback");
         close();
         return result;
     }
+    impl_->hardwareChannels = impl_->tp7MonitorMode ? 6 : 2;
+    impl_->tp7ConverterState = {};
 
-    unsigned int rate = format.sampleRate;
-    if ((error = snd_pcm_hw_params_set_rate_resample(impl_->pcm, hardware.get(), 0U)) < 0 ||
-        (error = snd_pcm_hw_params_set_rate_near(impl_->pcm, hardware.get(), &rate, nullptr)) < 0 ||
-        rate != format.sampleRate) {
-        core::Error result = error < 0
-                                 ? alsaError(core::ErrorCode::UnsupportedFormat,
-                                             "configure ALSA sample rate", error)
-                                 : core::makeError(core::ErrorCode::UnsupportedFormat,
-                                                   "ALSA device cannot run at exactly 48 kHz");
-        close();
-        return result;
-    }
-
-    snd_pcm_uframes_t period = static_cast<snd_pcm_uframes_t>(bufferFrames);
+    snd_pcm_uframes_t period = static_cast<snd_pcm_uframes_t>(
+        bufferFrames * (impl_->tp7MonitorMode ? 2 : 1));
     snd_pcm_uframes_t hardwareBuffer = period * 2U;
     if ((error = snd_pcm_hw_params_set_period_size_near(impl_->pcm, hardware.get(), &period, nullptr)) < 0 ||
         (error = snd_pcm_hw_params_set_buffer_size_near(impl_->pcm, hardware.get(),
@@ -132,11 +142,19 @@ core::Status AlsaAudioOutput::open(const core::AudioFormat& format,
 
     impl_->format = format;
     impl_->periodFrames = static_cast<core::FrameCount>(period);
+    impl_->hardwarePeriodFrames = static_cast<core::FrameCount>(period);
+    if (impl_->tp7MonitorMode) {
+        impl_->periodFrames /= 2;
+    }
     impl_->hardwareBufferFrames = static_cast<core::FrameCount>(hardwareBuffer);
     impl_->callback = &callback;
-    const std::size_t samples = static_cast<std::size_t>(impl_->periodFrames) * format.channels;
-    impl_->floatBuffer.assign(samples, 0.0F);
-    impl_->packedBuffer.assign(samples * 3U, std::byte{0});
+    const std::size_t sourceSamples =
+        static_cast<std::size_t>(impl_->periodFrames) * format.channels;
+    const std::size_t hardwareSamples = static_cast<std::size_t>(impl_->hardwarePeriodFrames) *
+                                        impl_->hardwareChannels;
+    impl_->floatBuffer.assign(sourceSamples, 0.0F);
+    impl_->hardwareFloatBuffer.assign(impl_->tp7MonitorMode ? hardwareSamples : 0U, 0.0F);
+    impl_->packedBuffer.assign(hardwareSamples * 3U, std::byte{0});
     return core::success();
 }
 
@@ -163,20 +181,26 @@ core::Status AlsaAudioOutput::start() {
         while (impl_->running.load(std::memory_order_acquire)) {
             impl_->callback->renderAudio(impl_->floatBuffer, impl_->periodFrames,
                                          impl_->format.channels);
-            for (std::size_t sample = 0; sample < impl_->floatBuffer.size(); ++sample) {
-                packS24_3LE(impl_->floatBuffer[sample],
+            std::span<const float> hardwareSamples = impl_->floatBuffer;
+            if (impl_->tp7MonitorMode) {
+                convertStereo48ToTp7Monitor96(impl_->floatBuffer, impl_->hardwareFloatBuffer,
+                                              impl_->tp7ConverterState);
+                hardwareSamples = impl_->hardwareFloatBuffer;
+            }
+            for (std::size_t sample = 0; sample < hardwareSamples.size(); ++sample) {
+                packS24_3LE(hardwareSamples[sample],
                             std::span<std::byte, 3>{impl_->packedBuffer.data() + sample * 3U, 3U});
             }
 
             snd_pcm_uframes_t writtenFrames = 0;
-            while (writtenFrames < static_cast<snd_pcm_uframes_t>(impl_->periodFrames) &&
+            while (writtenFrames < static_cast<snd_pcm_uframes_t>(impl_->hardwarePeriodFrames) &&
                    impl_->running.load(std::memory_order_acquire)) {
                 const auto* data = impl_->packedBuffer.data() +
                                    static_cast<std::size_t>(writtenFrames) *
-                                       impl_->format.bytesPerFrame();
+                                       impl_->hardwareChannels * 3U;
                 const snd_pcm_sframes_t written = snd_pcm_writei(
                     impl_->pcm, data,
-                    static_cast<snd_pcm_uframes_t>(impl_->periodFrames) - writtenFrames);
+                    static_cast<snd_pcm_uframes_t>(impl_->hardwarePeriodFrames) - writtenFrames);
                 if (written < 0) {
                     if (!impl_->running.load(std::memory_order_acquire)) {
                         break;
@@ -215,6 +239,7 @@ void AlsaAudioOutput::close() noexcept {
     }
     impl_->callback = nullptr;
     impl_->floatBuffer.clear();
+    impl_->hardwareFloatBuffer.clear();
     impl_->packedBuffer.clear();
 }
 
@@ -229,7 +254,8 @@ core::FrameCount AlsaAudioOutput::bufferFrames() const noexcept {
 }
 
 core::FrameCount AlsaAudioOutput::latencyFrames() const noexcept {
-    return impl_->hardwareBufferFrames;
+    return impl_->tp7MonitorMode ? impl_->hardwareBufferFrames / 2
+                                 : impl_->hardwareBufferFrames;
 }
 
 }  // namespace aw::platform::rpi

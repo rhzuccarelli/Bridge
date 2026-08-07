@@ -68,8 +68,12 @@ aplay -l
 AW_ALSA_DEVICE=hw:2,0 ./scripts/run-pi.sh --oled
 ```
 
-The PCM must accept `S24_3LE`, 48 kHz and two channels without resampling. If it cannot
-be opened, Bridge logs the error and uses the silent wall-clock fallback.
+The backend prefers `S24_3LE`, 48 kHz stereo. It also recognizes the TP-7's native
+`S24_3LE`, 96 kHz, six-channel playback endpoint: Bridge explicitly upsamples the
+48 kHz stereo monitor bus by two, maps it to FL/FR, and silences FC/LFE/RL/RR. This
+conversion affects monitoring only; project files and MTP exports stay at 48 kHz.
+If neither format can be opened, Bridge logs the error and uses the silent wall-clock
+fallback.
 
 Hardware bring-up plays distinct left/right tones for five seconds and fails if an xrun
 occurs:

@@ -84,6 +84,11 @@ recovery and reporting. Six synchronized stereo project tracks are mixed by Phas
 before the packed stereo bus reaches ALSA. A missing interface falls back to the silent
 wall-clock output without changing transport timing.
 
+The mandatory TP-7 monitor path is supported as a backend-only exception: its USB
+descriptor exposes asynchronous `S24_3LE`, 96 kHz, six-channel playback. The Pi keeps
+the engine callback at 48 kHz stereo, upsamples exactly 2x, routes it to FL/FR, and
+writes silence to FC/LFE/RL/RR. Stored and MTP-exported audio is never resampled.
+
 ## Phase 6 — GPIO backend
 
 libgpiod edge events, debounce, long-press, auto-repeat, quadrature decoding with

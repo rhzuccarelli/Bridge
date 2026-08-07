@@ -432,6 +432,7 @@ a mechanical change to three macros.
 | 24-bit | Matches the TP-7, so exports drop back onto the device with no conversion. |
 | 6 synchronized stereo tracks | Fixed product requirement for Bridge: twelve source channels mixed to one stereo monitor/output bus. Physical-button count does not limit project capacity. |
 | One active deck | Only one deck is handed to the realtime engine. Other decks remain silent source libraries; assigning one of their pairs creates a non-destructive clip reference, not an audio copy. |
+| TP-7 USB monitor at 96 kHz | The portable engine and all files remain 48 kHz. The Raspberry Pi backend alone performs exact 2x monitor upsampling and maps stereo to the TP-7's FL/FR channels; four remaining USB channels are silent. |
 | Float mixing | Keeps the mixer free of format concerns; int conversion is one cheap pass in the backend, which is also where dither will live. |
 
 Options a hardware recorder does not need are options the user has to scroll past.
