@@ -19,6 +19,7 @@ if [[ ! -x "$BINARY" ]]; then
 fi
 
 export AW_PROJECTS_ROOT="${AW_PROJECTS_ROOT:-$HOME/audio-projects}"
+export AW_ALSA_DEVICE="${AW_ALSA_DEVICE:-hw:0,0}"
 mkdir -p "$AW_PROJECTS_ROOT"
 
 case "${1:-}" in
@@ -37,6 +38,7 @@ fi
 
 echo "projects : $AW_PROJECTS_ROOT"
 echo "display  : $AW_DISPLAY"
+echo "audio    : $AW_ALSA_DEVICE (48 kHz, packed 24-bit, stereo)"
 echo "keys     : space=play s=stop r=rec 1-4=track enter=push arrows=encoder q=quit"
 echo
 

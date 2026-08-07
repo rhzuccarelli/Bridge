@@ -17,10 +17,8 @@ namespace aw::platform {
 /// sound card at all. A callback that overruns its deadline shows up here just
 /// as it would on real hardware.
 ///
-/// It is the development audio backend for both the simulator and, until the
-/// Phase 5 ALSA driver exists, the Raspberry Pi. When ALSA lands it becomes the
-/// fallback the Pi uses when no usable playback device is present, rather than
-/// letting the whole device fail to start over a missing speaker.
+/// It is the simulator backend and the Raspberry Pi fallback when no usable
+/// ALSA playback device is connected.
 class NullAudioOutput final : public hal::AudioOutputInterface {
 public:
     ~NullAudioOutput() override;

@@ -12,10 +12,13 @@
 ///
 #include "aw/platform/CompositeButtons.hpp"
 #include "aw/platform/CompositeEncoder.hpp"
+#include "aw/platform/FallbackAudioOutput.hpp"
+#include "aw/platform/rpi/AlsaPcm.hpp"
 #include "aw/platform/desktop/KeyboardInput.hpp"
 #include "aw/platform/desktop/VirtualPanel.hpp"
 #include "framework/Test.hpp"
 
+#include <array>
 #include <vector>
 
 using namespace aw;
@@ -363,4 +366,84 @@ AW_TEST(CompositeEncoder, FailsOnlyWhenNoSourceStarts) {
     const auto status = composite.start();
     AW_REQUIRE(!status.hasValue());
     AW_CHECK_EQ(status.error().code(), core::ErrorCode::DeviceNotConnected);
+}
+
+namespace {
+
+class TestRenderCallback final : public hal::AudioRenderCallback {
+public:
+    void renderAudio(std::span<float>, core::FrameCount, core::ChannelCount) noexcept override {}
+};
+
+class FakeAudioBackend final : public hal::AudioOutputInterface {
+public:
+    explicit FakeAudioBackend(bool opens) : opens_{opens} {}
+
+    core::Status open(const core::AudioFormat& format,
+                      core::FrameCount frames,
+                      hal::AudioRenderCallback&) override {
+        ++openCalls;
+        format_ = format;
+        frames_ = frames;
+        return opens_ ? core::success()
+                      : core::Status{core::makeError(core::ErrorCode::DeviceNotConnected)};
+    }
+    core::Status start() override { running_ = true; return core::success(); }
+    void stop() noexcept override { running_ = false; }
+    void close() noexcept override { running_ = false; }
+    bool isRunning() const noexcept override { return running_; }
+    core::AudioFormat format() const noexcept override { return format_; }
+    core::FrameCount bufferFrames() const noexcept override { return frames_; }
+    core::FrameCount latencyFrames() const noexcept override { return frames_ * 2; }
+
+    int openCalls{0};
+
+private:
+    bool opens_{false};
+    bool running_{false};
+    core::AudioFormat format_{};
+    core::FrameCount frames_{0};
+};
+
+}  // namespace
+
+AW_TEST(FallbackAudioOutput, PrefersThePrimaryBackend) {
+    auto primary = std::make_unique<FakeAudioBackend>(true);
+    auto fallback = std::make_unique<FakeAudioBackend>(true);
+    FakeAudioBackend* primaryPtr = primary.get();
+    FakeAudioBackend* fallbackPtr = fallback.get();
+    FallbackAudioOutput output{std::move(primary), std::move(fallback)};
+    TestRenderCallback callback;
+
+    AW_REQUIRE(output.open(core::kNativeFormat, 256, callback));
+    AW_CHECK(!output.isUsingFallback());
+    AW_CHECK_EQ(primaryPtr->openCalls, 1);
+    AW_CHECK_EQ(fallbackPtr->openCalls, 0);
+}
+
+AW_TEST(FallbackAudioOutput, UsesSilentBackendWhenPrimaryCannotOpen) {
+    auto primary = std::make_unique<FakeAudioBackend>(false);
+    auto fallback = std::make_unique<FakeAudioBackend>(true);
+    FakeAudioBackend* fallbackPtr = fallback.get();
+    FallbackAudioOutput output{std::move(primary), std::move(fallback)};
+    TestRenderCallback callback;
+
+    AW_REQUIRE(output.open(core::kNativeFormat, 256, callback));
+    AW_CHECK(output.isUsingFallback());
+    AW_CHECK_EQ(fallbackPtr->openCalls, 1);
+    AW_REQUIRE(output.start());
+    AW_CHECK(output.isRunning());
+}
+
+AW_TEST(AlsaPcm, PacksNormalizedFloatAsSigned24LittleEndian) {
+    std::array<std::byte, 3> packed{};
+    rpi::packS24_3LE(-1.0F, packed);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[0]), 0U);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[1]), 0U);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[2]), 128U);
+
+    rpi::packS24_3LE(1.0F, packed);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[0]), 255U);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[1]), 255U);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[2]), 127U);
 }

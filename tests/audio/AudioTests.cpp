@@ -624,3 +624,28 @@ AW_TEST(AudioEngine, ActivatesPreparedSceneAtNextBlockBoundary) {
     AW_CHECK(nearlyEqual(interleaved[0], -0.5F));
     engine.stop();
 }
+
+AW_TEST(AudioEngine, MixesSixSynchronizedStereoTracks) {
+    awtest::MemoryStorage storage;
+    audio::EngineScene scene;
+    for (core::TrackId id = 1; id <= 6; ++id) {
+        const std::string path = "/projects/Take/audio/Track0" + std::to_string(id) + ".wav";
+        storage.addFile(path,
+                        makeWaveFile({makeFmtChunk(1, 2, 48000, 24),
+                                      makeChunk("data", makeStereo24Data({{0.1F, -0.1F}}))}));
+        scene.tracks.push_back(audio::EngineTrack{id, path, 0, core::FrameRange{0, 1}});
+    }
+
+    FakeAudioOutput output;
+    events::EventQueue queue;
+    audio::AudioEngine engine{output, storage, queue};
+    AW_REQUIRE(engine.start(8));
+    AW_REQUIRE(engine.setScene(scene));
+    engine.transport().requestPlay();
+
+    std::array<float, 2> interleaved{};
+    engine.renderAudio(interleaved, 1, 2);
+    AW_CHECK(nearlyEqual(interleaved[0], 0.6F));
+    AW_CHECK(nearlyEqual(interleaved[1], -0.6F));
+    engine.stop();
+}

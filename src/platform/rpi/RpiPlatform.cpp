@@ -7,6 +7,7 @@
 #include "aw/core/Logger.hpp"
 #include "aw/platform/CompositeButtons.hpp"
 #include "aw/platform/CompositeEncoder.hpp"
+#include "aw/platform/FallbackAudioOutput.hpp"
 #include "aw/platform/NullAudioOutput.hpp"
 #include "aw/platform/desktop/DevBackends.hpp"
 #include "aw/platform/posix/PosixStorage.hpp"
@@ -39,6 +40,9 @@ core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
     if (const char* chip = std::getenv("AW_GPIO_CHIP")) {
         effective.pins.chipName = chip;  // See GpioPinMap::chipName for why.
     }
+    if (const char* device = std::getenv("AW_ALSA_DEVICE")) {
+        effective.alsaDevice = device;
+    }
 
     hal::Platform platform;
     platform.clock = std::make_unique<SteadyClock>();
@@ -47,14 +51,12 @@ core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
     platform.usb = std::make_unique<LibUsbHost>();
     platform.mtp = std::make_unique<LibMtpDevice>();
 
-    // Audio: the ALSA driver is a Phase 5 stub, and the app treats a dead audio
-    // device as fatal (rightly - the product is pointless without sound). So
-    // until ALSA is real, the Pi uses the same silent wall-clock output as the
-    // simulator: playback timing, meters and the transport all work, there is
-    // just no sound. Phase 5 swaps in AlsaAudioOutput and keeps this as the
-    // fallback for when no playback device is present.
-    platform.audioOutput = std::make_unique<NullAudioOutput>();
-    const bool audioIsPlaceholder = true;  // Flip when AlsaAudioOutput lands.
+    // Prefer exact 48 kHz / S24_3LE ALSA playback. A disconnected interface
+    // falls back to the wall-clock silent backend so projects and UI remain
+    // usable; the fallback never performs implicit resampling.
+    platform.audioOutput = std::make_unique<FallbackAudioOutput>(
+        std::make_unique<AlsaAudioOutput>(effective.alsaDevice),
+        std::make_unique<NullAudioOutput>());
 
     // Display and input come from the shared development backends (OLED or HDMI
     // panel, plus keyboard). The real GPIO encoder and button lines are merged
@@ -83,10 +85,7 @@ core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
 
     core::log::info(kModule, "Raspberry Pi platform ready: " + backends.description +
                                  " + GPIO (" + effective.pins.chipName + ")");
-    if (audioIsPlaceholder) {
-        core::log::warning(kModule,
-                           "audio is a silent placeholder until Phase 5 (ALSA) - no sound yet");
-    }
+    core::log::info(kModule, "ALSA playback device: " + effective.alsaDevice);
     return platform;
 }
 

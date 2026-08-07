@@ -72,8 +72,12 @@ and punch-in writing remain future work after the input backend exists.
 
 ## Phase 5 — ALSA backend
 
+**Implemented; Raspberry Pi hardware acceptance pending.**
+
 `S24_3LE`, 48 kHz, stereo, `SCHED_FIFO` thread, explicit period/buffer sizing, xrun
-recovery and reporting.
+recovery and reporting. Six synchronized stereo project tracks are mixed by Phase 4
+before the packed stereo bus reaches ALSA. A missing interface falls back to the silent
+wall-clock output without changing transport timing.
 
 ## Phase 6 — GPIO backend
 

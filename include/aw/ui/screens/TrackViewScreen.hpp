@@ -7,13 +7,10 @@
 
 namespace aw::ui {
 
-/// The main editing view: four track lanes with waveform overviews and meters.
-///
-/// The four physical track buttons select the focused track directly - no
-/// scrolling to reach a track, ever.  The encoder then adjusts whatever the
-/// current parameter mode is (gain / pan / position), and encoder push cycles
-/// that mode.  One knob, one button, no menu: this is the interaction pattern
-/// the whole UI is built on.
+/// The main editing view: six synchronized stereo tracks with waveform overviews and
+/// meters. Physical-button banking is finalized in Phase 7; this screen
+/// consumes the resulting focused-track events. The encoder adjusts the
+/// current parameter mode (gain / pan / position), and encoder push cycles it.
 class TrackViewScreen final : public Screen {
 public:
     /// What the encoder currently edits on the focused track.

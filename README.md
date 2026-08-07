@@ -20,6 +20,8 @@ only `src/platform/` changes when the port happens.
 streaming WAV layer, project manager, non-destructive model, and realtime multitrack
 playback engine are implemented. Playback uses bounded local-storage buffers; the TP-7
 is exclusively an explicit MTP import/export endpoint and is never a live audio source.
+Every project contains six synchronized stereo tracks (twelve source channels) mixed
+to one stereo monitor/output bus.
 
 ## Quick start
 

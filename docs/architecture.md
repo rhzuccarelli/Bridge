@@ -226,6 +226,24 @@ track armed, while explicit disarm returns future Play presses to normal playbac
 Phase 4 implements only this transport contract. Capture and punch-in are intentionally
 deferred until an audio-input backend exists.
 
+### Raspberry Pi ALSA output
+
+The Pi backend opens one playback PCM as interleaved `S24_3LE`, exactly 48 kHz and
+stereo, with ALSA resampling disabled. The six synchronized stereo tracks are already
+mixed into that stereo bus by `AudioEngine`; ALSA never sees project tracks and does no
+mixing. The requested period is 256 frames and the hardware buffer targets two periods.
+
+A dedicated writer thread attempts `SCHED_FIFO`, pulls one float period from the engine,
+packs it to signed 24-bit little-endian without allocation, and handles partial writes.
+ALSA's recovery helper repairs xruns and suspended/interrupted writes while the callback
+receives an xrun notification for measurement. Immediate drop was chosen for Stop because
+monitor audio should not continue draining after the user stops transport.
+
+The composition root wraps ALSA with `FallbackAudioOutput`. Failure to open the selected
+PCM logs a warning and activates `NullAudioOutput`, preserving wall-clock transport and
+UI behavior with no sound device. Allowing ALSA's `plug` layer to resample was rejected:
+it hides incompatible hardware and breaks the fixed-rate timing guarantee.
+
 ---
 
 ## 6. Display: framebuffer + damage rectangles
@@ -368,8 +386,8 @@ depth creeps in one screen at a time unless something stops it.
 
 Interaction rules:
 
-- The four physical track buttons select a track **directly**. Never scroll to reach
-  a track.
+- Projects contain exactly six synchronized stereo tracks. The prototype's four physical
+  track buttons require a shallow bank/focus mapping, finalized with the Phase 7 UI.
 - Encoder push cycles what the encoder edits (gain → pan → position) rather than
   opening a submenu.
 - Transport, Back, Undo, Save and Import/Export work on **every** screen, handled
@@ -412,7 +430,7 @@ a mechanical change to three macros.
 | --- | --- |
 | 48 kHz only | Removes resampling from the realtime path entirely — the thing that makes multitrack playback feasible on an ESP32-P4. Non-matching files convert once, on import. |
 | 24-bit | Matches the TP-7, so exports drop back onto the device with no conversion. |
-| 4 tracks | Matches the four front-panel buttons. The constant lives in `Timeline`, so an 8-track revision is a constant change, not a data-model change. |
+| 6 synchronized stereo tracks | Fixed product requirement for Bridge: twelve source channels mixed to one stereo monitor/output bus. Physical-button count does not limit project capacity. |
 | Float mixing | Keeps the mixer free of format concerns; int conversion is one cheap pass in the backend, which is also where dither will live. |
 
 Options a hardware recorder does not need are options the user has to scroll past.
@@ -460,20 +478,10 @@ libmtp, FatFS instead of `std::filesystem`.
 
 ---
 
-## Open questions needing a decision
+## Resolved phase decisions
 
-**Phase 3 — `metadata.json` parser.** Hand-rolled minimal JSON, or a header-only
-library (nlohmann/json, or a smaller one)? A dependency buys robustness; hand-rolling
-buys a known, small flash/RAM cost on the P4 and no supply chain. Given the schema is
-ours and tiny, the current intent is **hand-rolled**, flagged in
-`include/aw/project/ProjectMetadata.hpp` for confirmation.
-
-**Phase 5 — buffer size default.** 256 frames at 48 kHz is ~5.3 ms per period, ~10.7 ms
-of latency with two periods. Good for a responsive transport, tight for a
-non-realtime-tuned Pi OS kernel. Proposal: default 256, expose it in Settings, and
-measure on the actual board.
-
-**Phase 6 — the record button.** Does `Record` arm the focused track and require
-`Play` to roll (Portastudio behaviour), or does it start recording immediately
-(field-recorder behaviour)? This changes the transport state machine, so it should be
-settled before Phase 4 finishes.
+- Phase 3 uses a small purpose-built metadata parser: bounded footprint and no supply
+  chain, at the cost of supporting only Bridge's known schema.
+- Phase 4 uses Portastudio recording semantics: Record arms; Play rolls.
+- Phase 5 defaults to 256-frame periods and a two-period hardware buffer. Hardware
+  acceptance must measure xruns before this becomes a non-adjustable product constant.

@@ -6,9 +6,9 @@
 - A C++20 compiler (GCC 12+ or Clang 15+)
 - Ninja (optional, but assumed below)
 
-Phase 1 has **no third-party dependencies**. The Raspberry Pi backend will need
-`libasound2-dev`, `libgpiod-dev`, `libusb-1.0-0-dev` and `libmtp-dev` from Phase 5
-onwards; the build reports which are missing and keeps using stubs until then.
+The portable build has no third-party dependencies. The Raspberry Pi backend requires
+`libasound2-dev`; later GPIO/MTP phases use `libgpiod-dev`, `libusb-1.0-0-dev` and
+`libmtp-dev`.
 
 ## Development build (any machine)
 
@@ -60,9 +60,23 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DAW_PLATFORM=rpi
 cmake --build build
 ```
 
-Selects the `rpi` backend. As of Phase 1 the drivers are stubs that return
-`NotImplemented`, so the binary builds and runs but produces no sound and drives no
-panel. Phases 5–8 fill them in.
+Selects the `rpi` backend and requires `libasound2-dev`. Choose the playback PCM with
+`AW_ALSA_DEVICE` (default `hw:0,0`):
+
+```bash
+aplay -l
+AW_ALSA_DEVICE=hw:2,0 ./scripts/run-pi.sh --oled
+```
+
+The PCM must accept `S24_3LE`, 48 kHz and two channels without resampling. If it cannot
+be opened, Bridge logs the error and uses the silent wall-clock fallback.
+
+Hardware bring-up plays distinct left/right tones for five seconds and fails if an xrun
+occurs:
+
+```bash
+AW_ALSA_DEVICE=hw:2,0 ./build/src/platform/aw-alsa-test
+```
 
 ## Strict build
 

@@ -29,9 +29,9 @@ ExecStart=%DIR%/build/src/app/audio-workstation
 Environment=AW_DISPLAY=fb
 Environment=AW_INPUT=touch
 Environment=AW_PROJECTS_ROOT=/home/%USER%/audio-projects
+Environment=AW_ALSA_DEVICE=hw:0,0
 
-# The UI thread is not realtime, but the audio thread will want to be from
-# Phase 5 onward; granting it here avoids a second round of permissions later.
+# The UI thread is not realtime; the ALSA writer thread requests SCHED_FIFO.
 LimitRTPRIO=95
 LimitMEMLOCK=infinity
 

@@ -8,7 +8,7 @@ The bench prototype, and how the software talks to each piece.
 | **SPI OLED, 128×64 mono (SSD1306/SH1106)** | SPI + 2 GPIO | `Ssd1306Display` + `SpiOledBus` |
 | KY-040 rotary encoder with push switch | GPIO | `GpioEncoder` + `GpioButtons` *(Phase 6)* |
 | microSD | — | `PosixStorage` |
-| USB audio interface or codec | USB / I²S | `AlsaAudioOutput` *(Phase 5)* |
+| USB audio interface or codec | USB / I²S | `AlsaAudioOutput`: 48 kHz, S24_3LE, stereo |
 | Teenage Engineering TP-7 | USB (MTP) | `LibUsbHost` + `LibMtpDevice` *(Phase 8)* |
 | *(alternative)* 3.5" HDMI LCD, 480×320, XPT2046 touch | HDMI + SPI touch | `FramebufferDisplay` + `EvdevTouch` |
 
