@@ -1,4 +1,5 @@
 #include "aw/audio/AudioBuffer.hpp"
+#include "aw/audio/AudioEngine.hpp"
 #include "aw/audio/Mixer.hpp"
 #include "aw/audio/SampleConverter.hpp"
 #include "aw/audio/TrackPlayer.hpp"
@@ -375,6 +376,36 @@ AW_TEST(WavReader, RejectsUnsupportedChannelCounts) {
     AW_CHECK_EQ(status.error().code(), core::ErrorCode::UnsupportedFormat);
 }
 
+AW_TEST(WavReader, RejectsRiffSizeBeyondPhysicalFile) {
+    awtest::MemoryStorage storage;
+    auto wave = makeWaveFile({makeFmtChunk(1, 1, 48000, 24),
+                              makeChunk("data", std::vector<std::byte>(3, std::byte{0}))});
+    const std::uint32_t oversized = static_cast<std::uint32_t>(wave.size() + 100U);
+    const auto* raw = reinterpret_cast<const std::byte*>(&oversized);
+    std::copy(raw, raw + sizeof(oversized), wave.begin() + 4);
+    storage.addFile("/projects/Take/audio/Truncated.wav", std::move(wave));
+
+    const auto metadata =
+        audio::WavReader::readMetadata(storage, "/projects/Take/audio/Truncated.wav");
+    AW_REQUIRE(!metadata.hasValue());
+    AW_CHECK_EQ(metadata.error().code(), core::ErrorCode::InvalidFormat);
+}
+
+AW_TEST(WavReader, RejectsChunkThatExceedsRiffBounds) {
+    awtest::MemoryStorage storage;
+    auto wave = makeWaveFile({makeFmtChunk(1, 1, 48000, 24),
+                              makeChunk("data", std::vector<std::byte>(3, std::byte{0}))});
+    const std::uint32_t oversizedData = 300U;
+    const auto* raw = reinterpret_cast<const std::byte*>(&oversizedData);
+    std::copy(raw, raw + sizeof(oversizedData), wave.begin() + 40);
+    storage.addFile("/projects/Take/audio/BadChunk.wav", std::move(wave));
+
+    const auto metadata =
+        audio::WavReader::readMetadata(storage, "/projects/Take/audio/BadChunk.wav");
+    AW_REQUIRE(!metadata.hasValue());
+    AW_CHECK_EQ(metadata.error().code(), core::ErrorCode::InvalidFormat);
+}
+
 AW_TEST(WavWriter, WritesAPlayableWaveThatRoundTripsThroughReader) {
     awtest::MemoryStorage storage;
     audio::WavWriter writer;
@@ -414,6 +445,15 @@ AW_TEST(WavWriter, WritesAPlayableWaveThatRoundTripsThroughReader) {
     AW_CHECK(nearlyEqual(readBack.channel(1)[1], 0.25F));
     AW_CHECK(nearlyEqual(readBack.channel(0)[2], 0.75F));
     AW_CHECK(nearlyEqual(readBack.channel(1)[2], -0.75F));
+}
+
+AW_TEST(WavWriter, RejectsMoreThanTwoChannels) {
+    awtest::MemoryStorage storage;
+    audio::WavWriter writer;
+    const core::AudioFormat format{48000, 3, core::SampleFormat::Int24};
+    const auto status = writer.create(storage, "/projects/Take/audio/Three.wav", format);
+    AW_REQUIRE(!status.hasValue());
+    AW_CHECK_EQ(status.error().code(), core::ErrorCode::InvalidArgument);
 }
 
 AW_TEST(AudioEngine, RendersSceneAudioIntoInterleavedOutput) {

@@ -379,6 +379,26 @@ a mechanical change to three macros.
 
 Options a hardware recorder does not need are options the user has to scroll past.
 
+### WAV streaming and recovery
+
+`WavReader` walks the RIFF chunk list through `hal::FileHandle`, validates every
+declared range against both the RIFF boundary and physical file size, and converts
+only the caller-requested block into planar float. Unknown chunks are skipped, and
+LIST/INFO allocation is capped at 1 MiB so an untrusted import cannot force an
+unbounded metadata allocation.
+
+`WavWriter` emits a conventional 44-byte PCM header, appends interleaved blocks, and
+patches RIFF/data sizes after each second of newly written audio and again on close.
+The alternatives were patching every block (best recovery, but synchronous seeks and
+flushes violate the storage contract and amplify flash writes) or only on close (fast,
+but a power loss leaves an unusable file). A one-second checkpoint bounds lost tail
+audio while keeping filesystem I/O off the realtime callback and out of each block.
+
+RIFF's 32-bit chunk sizes cap a file below 4 GiB. The writer rejects growth beyond
+that boundary rather than silently wrapping; RF64 was not selected because TP-7
+interoperability matters more than recordings longer than the RIFF limit. Adding RF64
+later can be isolated behind the same reader/writer API.
+
 ---
 
 ## 13. What the ESP32-P4 port will and will not touch

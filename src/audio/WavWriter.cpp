@@ -5,6 +5,7 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace aw::audio {
@@ -30,6 +31,21 @@ core::Status writeLittleAt(hal::FileHandle& file, std::uint64_t offset, T value)
     }
     if (written.value() != raw.size()) {
         return core::makeError(core::ErrorCode::IoError, "short WAV header patch write");
+    }
+    return core::success();
+}
+
+core::Status writeAll(hal::FileHandle& file, std::span<const std::byte> source) {
+    std::size_t offset = 0;
+    while (offset < source.size()) {
+        auto written = file.write(source.subspan(offset));
+        if (!written) {
+            return written.error();
+        }
+        if (written.value() == 0) {
+            return core::makeError(core::ErrorCode::IoError, "zero-length WAV write");
+        }
+        offset += written.value();
     }
     return core::success();
 }
@@ -75,6 +91,7 @@ struct WavWriter::Impl {
     std::uint64_t riffSizeOffset{4};
     std::uint64_t dataChunkSizeOffset{0};
     std::vector<std::byte> scratch;
+    core::FrameCount nextCheckpoint{48000};
 };
 
 WavWriter::WavWriter() = default;
@@ -94,7 +111,8 @@ core::Status WavWriter::create(hal::StorageInterface& storage,
             return status;
         }
     }
-    if (format.sampleRate == 0 || format.channels == 0 || format.bytesPerFrame() == 0) {
+    if (format.sampleRate == 0 || format.channels == 0 || format.channels > 2 ||
+        format.bytesPerFrame() == 0) {
         return core::makeError(core::ErrorCode::InvalidArgument, "invalid WAV format");
     }
 
@@ -126,12 +144,8 @@ core::Status WavWriter::create(hal::StorageInterface& storage,
                   {std::byte{'d'}, std::byte{'a'}, std::byte{'t'}, std::byte{'a'}});
     appendLittle<std::uint32_t>(header, 0U);
 
-    auto written = file.value()->write(header);
-    if (!written) {
-        return written.error();
-    }
-    if (written.value() != header.size()) {
-        return core::makeError(core::ErrorCode::IoError, "short WAV header write");
+    if (auto status = writeAll(*file.value(), header); !status) {
+        return status;
     }
     if (auto status = file.value()->flush(); !status) {
         return status;
@@ -143,6 +157,7 @@ core::Status WavWriter::create(hal::StorageInterface& storage,
     impl_->framesWritten = 0;
     impl_->riffSizeOffset = 4;
     impl_->dataChunkSizeOffset = 40;
+    impl_->nextCheckpoint = static_cast<core::FrameCount>(format.sampleRate);
     return core::success();
 }
 
@@ -155,8 +170,17 @@ core::Status WavWriter::write(const AudioBuffer& source) {
                                "source channel count does not match WAV format");
     }
 
+    if (source.frameCount() < 0) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "negative WAV frame count");
+    }
     const std::size_t byteCount =
         static_cast<std::size_t>(source.frameCount()) * impl_->format.bytesPerFrame();
+    const std::uint64_t currentBytes =
+        static_cast<std::uint64_t>(impl_->framesWritten) * impl_->format.bytesPerFrame();
+    if (currentBytes + byteCount > std::numeric_limits<std::uint32_t>::max()) {
+        return core::makeError(core::ErrorCode::InvalidArgument,
+                               "WAV data exceeds the RIFF 32-bit size limit");
+    }
     impl_->scratch.resize(byteCount);
 
     std::vector<std::span<const float>> channels;
@@ -170,17 +194,21 @@ core::Status WavWriter::write(const AudioBuffer& source) {
         return status;
     }
 
-    auto written = impl_->file->write(impl_->scratch);
-    if (!written) {
-        return written.error();
-    }
-    if (written.value() != byteCount) {
-        return core::makeError(core::ErrorCode::IoError, "short WAV data write");
+    if (auto status = writeAll(*impl_->file, impl_->scratch); !status) {
+        return status;
     }
 
     impl_->framesWritten += source.frameCount();
-    return patchHeader(*impl_->file, impl_->format, impl_->framesWritten, impl_->riffSizeOffset,
-                       impl_->dataChunkSizeOffset);
+    if (impl_->framesWritten >= impl_->nextCheckpoint) {
+        if (auto status = patchHeader(*impl_->file, impl_->format, impl_->framesWritten,
+                                      impl_->riffSizeOffset, impl_->dataChunkSizeOffset);
+            !status) {
+            return status;
+        }
+        impl_->nextCheckpoint =
+            impl_->framesWritten + static_cast<core::FrameCount>(impl_->format.sampleRate);
+    }
+    return core::success();
 }
 
 core::Status WavWriter::close() {

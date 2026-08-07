@@ -35,6 +35,8 @@ Phase 6 (it needs libgpiod); its pin map and decoding requirements are recorded.
 
 ## Phase 2 — WAV support
 
+**Complete.**
+
 `WavReader`, `WavWriter`, `WavMetadata`, `SampleConverter`.
 
 - PCM, 24-bit, 48 kHz, mono and stereo.
@@ -42,6 +44,9 @@ Phase 6 (it needs libgpiod); its pin map and decoding requirements are recorded.
 - Streaming only — nothing loads a whole file.
 - Tests against `MemoryStorage` with hand-built files, including deliberately
   malformed ones.
+- RIFF and chunk sizes are checked against both the declared container and physical
+  file bounds. Writer headers are checkpointed once per second of new audio and on
+  close, keeping interrupted recordings playable without flushing every block.
 
 ## Phase 3 — Project manager
 

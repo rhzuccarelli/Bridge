@@ -91,6 +91,15 @@ void parseInfoList(std::span<const std::byte> bytes, WavMetadata& metadata) {
 }
 
 core::Result<WavMetadata> parseHeader(hal::FileHandle& file) {
+    const auto fileSizeResult = file.size();
+    if (!fileSizeResult) {
+        return fileSizeResult.error();
+    }
+    const std::uint64_t fileSize = fileSizeResult.value();
+    if (fileSize < 12) {
+        return core::makeError(core::ErrorCode::InvalidFormat, "truncated RIFF header");
+    }
+
     std::array<std::byte, 12> riffHeader{};
     if (auto status = readExact(file, riffHeader); !status) {
         return status.error();
@@ -101,25 +110,38 @@ core::Result<WavMetadata> parseHeader(hal::FileHandle& file) {
         return core::makeError(core::ErrorCode::InvalidFormat, "not a RIFF/WAVE file");
     }
 
+    const std::uint64_t riffEnd = 8U + little<std::uint32_t>(riffHeader, 4);
+    if (riffEnd < 12 || riffEnd > fileSize) {
+        return core::makeError(core::ErrorCode::InvalidFormat, "RIFF size exceeds file bounds");
+    }
+
     WavMetadata metadata;
     bool haveFormat = false;
     bool haveData = false;
 
     while (true) {
-        std::array<std::byte, 8> chunkHeader{};
-        auto read = file.read(chunkHeader);
-        if (!read) {
-            return read.error();
+        const auto chunkPosition = file.tell();
+        if (!chunkPosition) {
+            return chunkPosition.error();
         }
-        if (read.value() == 0) {
+        if (chunkPosition.value() == riffEnd) {
             break;
         }
-        if (read.value() != chunkHeader.size()) {
+        if (chunkPosition.value() > riffEnd || riffEnd - chunkPosition.value() < 8) {
             return core::makeError(core::ErrorCode::InvalidFormat, "truncated chunk header");
+        }
+
+        std::array<std::byte, 8> chunkHeader{};
+        if (auto status = readExact(file, chunkHeader); !status) {
+            return status.error();
         }
 
         const std::string id{reinterpret_cast<const char*>(chunkHeader.data()), 4};
         const std::uint32_t size = little<std::uint32_t>(chunkHeader, 4);
+        const std::uint64_t paddedSize = static_cast<std::uint64_t>(size) + (size & 1U);
+        if (paddedSize > riffEnd - chunkPosition.value() - 8U) {
+            return core::makeError(core::ErrorCode::InvalidFormat, "chunk exceeds RIFF bounds");
+        }
 
         if (id == "fmt ") {
             if (size < 16) {
@@ -180,11 +202,18 @@ core::Result<WavMetadata> parseHeader(hal::FileHandle& file) {
                 return status.error();
             }
         } else if (id == "LIST") {
-            std::vector<std::byte> listData(size);
-            if (auto status = readExact(file, listData); !status) {
-                return status.error();
+            constexpr std::uint32_t kMaxInfoBytes = 1024U * 1024U;
+            if (size > kMaxInfoBytes) {
+                if (auto status = skipBytes(file, size); !status) {
+                    return status.error();
+                }
+            } else {
+                std::vector<std::byte> listData(size);
+                if (auto status = readExact(file, listData); !status) {
+                    return status.error();
+                }
+                parseInfoList(listData, metadata);
             }
-            parseInfoList(listData, metadata);
         } else {
             if (auto status = skipBytes(file, size); !status) {
                 return status.error();

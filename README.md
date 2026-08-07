@@ -16,10 +16,10 @@ only `src/platform/` changes when the port happens.
 
 ## Status
 
-**Phase 1 complete: structure, architecture and placeholders.** The tree builds, the
-application runs against a simulator backend, and 59 unit tests pass. The audio, WAV,
-project, MTP and display *implementations* are Phase 2–8 work; their stubs return
-`NotImplemented` so a half-wired build fails loudly rather than silently doing nothing.
+**Phases 1, 1.5 and 2 complete.** The portable architecture, simulator, Raspberry Pi
+prototype I/O, and streaming WAV support are implemented. WAV files are parsed as RIFF
+chunk lists, read and written without whole-file loads, and converted between packed PCM
+and planar float buffers. Later project, MTP and screen work remains phased separately.
 
 ## Quick start
 
