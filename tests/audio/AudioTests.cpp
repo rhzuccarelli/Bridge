@@ -462,6 +462,22 @@ AW_TEST(TrackPlayer, SelectsStereoPairFromTwelveChannelTp7Wave) {
     AW_CHECK(nearlyEqual(output.channel(1)[0], -0.8F));
 }
 
+AW_TEST(TrackPlayer, RoutesOneSourceChannelToRightOnly) {
+    awtest::MemoryStorage storage;
+    const std::array<float, 2> frame{0.25F, -0.75F};
+    storage.addFile("/projects/Take/audio/Stereo.wav",
+                    makeWaveFile({makeFmtChunk(1, 2, 48000, 24),
+                                  makeChunk("data", makeInterleaved24Data(frame))}));
+    audio::TrackPlayer player;
+    AW_REQUIRE(player.setSource(storage, "/projects/Take/audio/Stereo.wav", 0, 1, 1, 1));
+    AW_REQUIRE(player.prefetch(0));
+    audio::AudioBuffer output{2, 1};
+    output.clear();
+    player.render(output, 0, 1);
+    AW_CHECK(nearlyEqual(output.channel(0)[0], 0.0F));
+    AW_CHECK(nearlyEqual(output.channel(1)[0], 0.25F));
+}
+
 AW_TEST(WavReader, RejectsRiffSizeBeyondPhysicalFile) {
     awtest::MemoryStorage storage;
     auto wave = makeWaveFile({makeFmtChunk(1, 1, 48000, 24),

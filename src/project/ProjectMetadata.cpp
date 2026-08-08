@@ -59,7 +59,11 @@ void appendClip(std::string& out, const Clip& clip, bool trailingComma) {
     appendLine(out, 5, "\"fadeOutFrames\": " + std::to_string(clip.fadeOutFrames) + ",");
     appendLine(out, 5, "\"sourceChannel\": " + std::to_string(clip.sourceChannel) + ",");
     appendLine(out, 5,
-               "\"sourceChannelCount\": " + std::to_string(clip.sourceChannelCount));
+               "\"sourceChannelCount\": " + std::to_string(clip.sourceChannelCount) + ",");
+    appendLine(out, 5,
+               "\"destinationChannel\": " + std::to_string(clip.destinationChannel) + ",");
+    appendLine(out, 5, "\"destinationChannelCount\": " +
+                           std::to_string(clip.destinationChannelCount));
     appendLine(out, 4, trailingComma ? "}," : "}");
 }
 
@@ -485,6 +489,14 @@ private:
                 auto value = parseInteger<core::ChannelCount>();
                 if (!value) return value.error();
                 clip.sourceChannelCount = value.value();
+            } else if (key.value() == "destinationChannel") {
+                auto value = parseInteger<core::ChannelCount>();
+                if (!value) return value.error();
+                clip.destinationChannel = value.value();
+            } else if (key.value() == "destinationChannelCount") {
+                auto value = parseInteger<core::ChannelCount>();
+                if (!value) return value.error();
+                clip.destinationChannelCount = value.value();
             } else {
                 return invalid("unexpected clip key");
             }
@@ -502,6 +514,11 @@ private:
         if ((clip.sourceChannelCount != 1 && clip.sourceChannelCount != 2) ||
             clip.sourceChannel >= 12 || clip.sourceChannelCount > 12 - clip.sourceChannel) {
             return invalid("invalid clip source channels");
+        }
+        if ((clip.destinationChannelCount != 1 && clip.destinationChannelCount != 2) ||
+            clip.destinationChannel >= 2 ||
+            clip.destinationChannelCount > 2 - clip.destinationChannel) {
+            return invalid("invalid clip destination channels");
         }
         return clip;
     }

@@ -21,6 +21,7 @@ enum class ScreenId : std::uint8_t {
     Playback,
     Import,
     Export,
+    CopyChannel,
     Settings,
 };
 

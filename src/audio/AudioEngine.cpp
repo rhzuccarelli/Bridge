@@ -167,13 +167,16 @@ core::Status AudioEngine::setScene(const EngineScene& scene) {
         if (sharedRepresentative) {
             if (auto status = player->shareSource(*prepared->players[*sharedRepresentative],
                                                   track.sourceChannel,
-                                                  track.sourceChannelCount);
+                                                  track.sourceChannelCount,
+                                                  track.destinationChannel,
+                                                  track.destinationChannelCount);
                 !status) {
                 return status;
             }
         } else {
             if (auto status = player->setSource(storage_, track.audioFile, track.sourceChannel,
-                                                track.sourceChannelCount);
+                                                track.sourceChannelCount, track.destinationChannel,
+                                                track.destinationChannelCount);
                 !status) {
                 return status;
             }

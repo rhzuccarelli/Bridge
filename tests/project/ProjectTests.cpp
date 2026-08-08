@@ -6,6 +6,7 @@
 #include "aw/project/UndoStack.hpp"
 #include "aw/project/ImportService.hpp"
 #include "aw/project/ExportService.hpp"
+#include "aw/project/CopyChannelCommand.hpp"
 #include "aw/audio/WavWriter.hpp"
 #include "framework/Test.hpp"
 #include "support/MemoryStorage.hpp"
@@ -305,6 +306,8 @@ AW_TEST(MetadataSerializer, SavesAndLoadsProjectState) {
     clip.fadeOutFrames = 24;
     clip.sourceChannel = 8;
     clip.sourceChannelCount = 2;
+    clip.destinationChannel = 1;
+    clip.destinationChannelCount = 1;
     track.clips.push_back(std::move(clip));
 
     project.mutableTimeline().tracks.push_back(std::move(track));
@@ -336,6 +339,10 @@ AW_TEST(MetadataSerializer, SavesAndLoadsProjectState) {
                 core::FrameIndex{1024});
     AW_CHECK_EQ(loaded.value().decks()[1].timeline.tracks[0].clips[0].sourceChannel,
                 core::ChannelCount{8});
+    AW_CHECK_EQ(loaded.value().decks()[1].timeline.tracks[0].clips[0].destinationChannel,
+                core::ChannelCount{1});
+    AW_CHECK_EQ(loaded.value().decks()[1].timeline.tracks[0].clips[0].destinationChannelCount,
+                core::ChannelCount{1});
     AW_CHECK_EQ(loaded.value().decks().size(), std::size_t{2});
     AW_CHECK_EQ(loaded.value().decks()[1].name, std::string{"Deck A"});
 }
@@ -422,6 +429,64 @@ AW_TEST(ProjectManager, BuildSceneIncludesOnlyTheActiveDeck) {
     AW_CHECK_EQ(scene.tracks.size(), std::size_t{1});
     AW_CHECK_EQ(scene.tracks[0].audioFile,
                 core::Path{"/projects/Deck selection/audio/active.wav"});
+}
+
+AW_TEST(CopyChannelCommand, CopiesDeckATrackFiveLeftIntoDeckCTrackTwoRight) {
+    project::Project project{"Routing", "/projects/Routing"};
+    auto addSixTracks = [&project](project::Deck& deck) {
+        for (std::size_t index = 0; index < project::kTrackCount; ++index) {
+            project::Track track;
+            track.id = project.allocateTrackId();
+            track.name = "Track" + std::to_string(index + 1);
+            deck.timeline.tracks.push_back(std::move(track));
+        }
+    };
+    addSixTracks(*project.findDeck(project.activeDeckId()));
+    project::Deck& deckC = project.addDeck("Deck C");
+    const project::DeckId deckCId = deckC.id;
+    addSixTracks(deckC);
+
+    project::Deck* deckA = project.findDeck(project.activeDeckId());
+    AW_REQUIRE(deckA != nullptr);
+    project::Clip source;
+    source.id = project.allocateClipId();
+    source.sourceFile = "tp7-a.wav";
+    source.sourceRange = {100, 500};
+    source.timelinePosition = 200;
+    source.sourceChannel = 8;
+    source.sourceChannelCount = 2;
+    deckA->timeline.tracks[4].clips.push_back(source);
+
+    project::Clip existing;
+    existing.id = project.allocateClipId();
+    existing.sourceFile = "tp7-c.wav";
+    existing.sourceRange = {0, 500};
+    existing.sourceChannel = 2;
+    existing.sourceChannelCount = 2;
+    deckC.timeline.tracks[1].clips.push_back(existing);
+
+    project::CopyChannelCommand command{deckA->id, 4, 0, deckCId, 1, 1};
+    AW_REQUIRE(command.apply(project));
+    AW_CHECK_EQ(project.activeDeckId(), deckCId);
+    const auto& routed = project.activeDeck().timeline.tracks[1].clips;
+    AW_REQUIRE(routed.size() == 2);
+    AW_CHECK_EQ(routed[0].sourceFile, std::string{"tp7-c.wav"});
+    AW_CHECK_EQ(routed[0].sourceChannel, core::ChannelCount{2});
+    AW_CHECK_EQ(routed[0].destinationChannel, core::ChannelCount{0});
+    AW_CHECK_EQ(routed[0].destinationChannelCount, core::ChannelCount{1});
+    AW_CHECK_EQ(routed[1].sourceFile, std::string{"tp7-a.wav"});
+    AW_CHECK_EQ(routed[1].sourceChannel, core::ChannelCount{8});
+    AW_CHECK_EQ(routed[1].sourceChannelCount, core::ChannelCount{1});
+    AW_CHECK_EQ(routed[1].destinationChannel, core::ChannelCount{1});
+    AW_CHECK_EQ(routed[1].destinationChannelCount, core::ChannelCount{1});
+
+    AW_REQUIRE(command.revert(project));
+    AW_CHECK_EQ(project.activeDeck().name, std::string{"Deck A"});
+    const project::Deck* restoredC = project.findDeck(deckCId);
+    AW_REQUIRE(restoredC != nullptr);
+    AW_REQUIRE(restoredC->timeline.tracks[1].clips.size() == 1);
+    AW_CHECK_EQ(restoredC->timeline.tracks[1].clips[0].destinationChannelCount,
+                core::ChannelCount{2});
 }
 
 AW_TEST(ImportService, ImportsOneTwelveChannelWaveAsSixStereoPairsInOneDeck) {

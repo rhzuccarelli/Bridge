@@ -1,6 +1,7 @@
 #include "aw/ui/UiController.hpp"
 
 #include "aw/ui/screens/ExportScreen.hpp"
+#include "aw/ui/screens/CopyChannelScreen.hpp"
 #include "aw/ui/screens/HomeScreen.hpp"
 #include "aw/ui/screens/ImportScreen.hpp"
 #include "aw/ui/screens/PlaybackScreen.hpp"
@@ -75,6 +76,7 @@ core::Status UiController::initialise() {
     navigator_.registerScreen(std::make_unique<HomeScreen>(projects_, engine_));
     navigator_.registerScreen(std::make_unique<ProjectBrowserScreen>(projects_));
     navigator_.registerScreen(std::make_unique<TrackViewScreen>(projects_, engine_));
+    navigator_.registerScreen(std::make_unique<CopyChannelScreen>(projects_));
     navigator_.registerScreen(std::make_unique<PlaybackScreen>(projects_, engine_));
     navigator_.registerScreen(std::make_unique<SettingsScreen>());
     if (mtpManager_ && mtpBrowser_ && importer_ && exporter_ && tasks_ && workerQueue_) {

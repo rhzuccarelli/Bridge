@@ -37,6 +37,7 @@ private:
     core::TrackId focusedTrack_{core::kInvalidTrackId};
     ParameterMode mode_{ParameterMode::Gain};
     std::array<float, project::kTrackCount> levels_{};
+    bool encoderPushWasLong_{false};
 };
 
 }  // namespace aw::ui

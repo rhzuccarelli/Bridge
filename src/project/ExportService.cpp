@@ -141,11 +141,14 @@ core::Status ExportService::run(const ExportPlan& plan, std::uint32_t jobId) {
                 if (!read) { status = read.error(); break; }
                 const std::size_t destinationOffset = static_cast<std::size_t>(overlapStart - blockStart);
                 const float gain = track.gain * clip.gain;
-                for (std::size_t pairChannel = 0; pairChannel < 2; ++pairChannel) {
+                for (std::size_t routeChannel = 0;
+                     routeChannel < clip.destinationChannelCount; ++routeChannel) {
                     const std::size_t sourceIndex = clip.sourceChannel +
-                        std::min<std::size_t>(pairChannel, clip.sourceChannelCount - 1U);
+                        std::min<std::size_t>(routeChannel, clip.sourceChannelCount - 1U);
                     if (sourceIndex >= source.channelCount()) continue;
-                    auto destination = output.channel(static_cast<core::ChannelCount>(trackIndex * 2U + pairChannel));
+                    const std::size_t pairChannel = clip.destinationChannel + routeChannel;
+                    auto destination = output.channel(static_cast<core::ChannelCount>(
+                        trackIndex * 2U + pairChannel));
                     const auto samples = source.channel(static_cast<core::ChannelCount>(sourceIndex));
                     for (std::size_t frame = 0; frame < samples.size(); ++frame)
                         destination[destinationOffset + frame] = std::clamp(

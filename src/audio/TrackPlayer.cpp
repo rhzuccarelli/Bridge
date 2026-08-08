@@ -48,12 +48,18 @@ bool validRoute(core::ChannelCount first,
     return (count == 1 || count == 2) && first < available && count <= available - first;
 }
 
+bool validDestination(core::ChannelCount first, core::ChannelCount count) noexcept {
+    return (count == 1 || count == 2) && first < 2 && count <= 2 - first;
+}
+
 }  // namespace
 
 struct TrackPlayer::Impl {
     std::shared_ptr<SharedStreamSource> source;
     core::ChannelCount sourceChannel{0};
     core::ChannelCount sourceChannelCount{2};
+    core::ChannelCount destinationChannel{0};
+    core::ChannelCount destinationChannelCount{2};
     std::atomic<float> lastPeak{0.0F};
 };
 
@@ -63,7 +69,9 @@ TrackPlayer::~TrackPlayer() = default;
 core::Status TrackPlayer::setSource(hal::StorageInterface& storage,
                                     const core::Path& path,
                                     core::ChannelCount sourceChannel,
-                                    core::ChannelCount sourceChannelCount) {
+                                    core::ChannelCount sourceChannelCount,
+                                    core::ChannelCount destinationChannel,
+                                    core::ChannelCount destinationChannelCount) {
     auto source = std::make_shared<SharedStreamSource>();
     if (auto status = source->reader.open(storage, path); !status) return status;
     const core::ChannelCount available = source->reader.metadata().format.channels;
@@ -71,17 +79,24 @@ core::Status TrackPlayer::setSource(hal::StorageInterface& storage,
         return core::makeError(core::ErrorCode::InvalidArgument,
                                "source channel selection is outside WAV channel range");
     }
+    if (!validDestination(destinationChannel, destinationChannelCount)) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "invalid destination channel");
+    }
     source->streamScratch = AudioBuffer{available, kStreamBlockFrames};
     impl_->source = std::move(source);
     impl_->sourceChannel = sourceChannel;
     impl_->sourceChannelCount = sourceChannelCount;
+    impl_->destinationChannel = destinationChannel;
+    impl_->destinationChannelCount = destinationChannelCount;
     impl_->lastPeak.store(0.0F, std::memory_order_relaxed);
     return core::success();
 }
 
 core::Status TrackPlayer::shareSource(const TrackPlayer& sourceOwner,
                                       core::ChannelCount sourceChannel,
-                                      core::ChannelCount sourceChannelCount) {
+                                      core::ChannelCount sourceChannelCount,
+                                      core::ChannelCount destinationChannel,
+                                      core::ChannelCount destinationChannelCount) {
     if (!sourceOwner.impl_->source || !sourceOwner.impl_->source->reader.isOpen()) {
         return core::makeError(core::ErrorCode::InvalidState, "source owner has no stream");
     }
@@ -91,9 +106,14 @@ core::Status TrackPlayer::shareSource(const TrackPlayer& sourceOwner,
         return core::makeError(core::ErrorCode::InvalidArgument,
                                "source channel selection is outside WAV channel range");
     }
+    if (!validDestination(destinationChannel, destinationChannelCount)) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "invalid destination channel");
+    }
     impl_->source = sourceOwner.impl_->source;
     impl_->sourceChannel = sourceChannel;
     impl_->sourceChannelCount = sourceChannelCount;
+    impl_->destinationChannel = destinationChannel;
+    impl_->destinationChannelCount = destinationChannelCount;
     impl_->lastPeak.store(0.0F, std::memory_order_relaxed);
     return core::success();
 }
@@ -279,8 +299,14 @@ void TrackPlayer::render(AudioBuffer& destination,
                                             : leftOffset;
         const float mixedLeft = block->samples[leftOffset + index] * gain * leftPan;
         const float mixedRight = block->samples[rightOffset + index] * gain * rightPan;
-        outputLeft[static_cast<std::size_t>(frame)] += mixedLeft;
-        outputRight[static_cast<std::size_t>(frame)] += mixedRight;
+        if (impl_->destinationChannelCount == 2) {
+            outputLeft[static_cast<std::size_t>(frame)] += mixedLeft;
+            outputRight[static_cast<std::size_t>(frame)] += mixedRight;
+        } else if (impl_->destinationChannel == 0) {
+            outputLeft[static_cast<std::size_t>(frame)] += mixedLeft;
+        } else {
+            outputRight[static_cast<std::size_t>(frame)] += mixedLeft;
+        }
         peak = std::max(peak, std::max(std::fabs(mixedLeft), std::fabs(mixedRight)));
     }
     impl_->lastPeak.store(peak, std::memory_order_relaxed);

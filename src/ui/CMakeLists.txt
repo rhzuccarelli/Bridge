@@ -10,6 +10,7 @@ add_library(aw_ui STATIC
     Navigator.cpp
     Screen.cpp
     UiController.cpp
+    screens/CopyChannelScreen.cpp
     screens/ExportScreen.cpp
     screens/HomeScreen.cpp
     screens/ImportScreen.cpp

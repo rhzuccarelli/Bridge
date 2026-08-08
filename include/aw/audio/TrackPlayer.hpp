@@ -43,13 +43,17 @@ public:
     [[nodiscard]] core::Status setSource(hal::StorageInterface& storage,
                                          const core::Path& path,
                                          core::ChannelCount sourceChannel = 0,
-                                         core::ChannelCount sourceChannelCount = 2);
+                                         core::ChannelCount sourceChannelCount = 2,
+                                         core::ChannelCount destinationChannel = 0,
+                                         core::ChannelCount destinationChannelCount = 2);
 
     /// Adds another mix route over an already-open stream. Both players consume
     /// the same multichannel blocks; no second file handle or ring is created.
     [[nodiscard]] core::Status shareSource(const TrackPlayer& sourceOwner,
                                             core::ChannelCount sourceChannel,
-                                            core::ChannelCount sourceChannelCount = 2);
+                                            core::ChannelCount sourceChannelCount = 2,
+                                            core::ChannelCount destinationChannel = 0,
+                                            core::ChannelCount destinationChannelCount = 2);
 
     void clearSource() noexcept;
     [[nodiscard]] bool hasSource() const noexcept;

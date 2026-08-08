@@ -1,6 +1,7 @@
 #include "aw/project/Project.hpp"
 
 #include <algorithm>
+#include <utility>
 
 namespace aw::project {
 
@@ -16,6 +17,16 @@ Deck& Project::addDeck(std::string name) {
     deck.timeline.sampleRate = 48000;
     decks_.push_back(std::move(deck));
     return decks_.back();
+}
+
+const Deck* Project::findDeck(DeckId id) const noexcept {
+    const auto it = std::find_if(decks_.begin(), decks_.end(),
+                                 [id](const Deck& deck) { return deck.id == id; });
+    return it == decks_.end() ? nullptr : &*it;
+}
+
+Deck* Project::findDeck(DeckId id) noexcept {
+    return const_cast<Deck*>(std::as_const(*this).findDeck(id));
 }
 
 core::Status Project::removeDeck(DeckId id) noexcept {

@@ -22,6 +22,14 @@ NavigationRequest TrackViewScreen::handleEvent(const events::Event& event) {
     if (const auto* button = std::get_if<events::ButtonEvent>(&event)) {
         if (button->id == core::ButtonId::EncoderPush) {
             if (button->action == core::ButtonAction::Pressed) {
+                encoderPushWasLong_ = false;
+                return NavigationRequest::none();
+            }
+            if (button->action == core::ButtonAction::LongPressed) {
+                encoderPushWasLong_ = true;
+                return NavigationRequest::push(ScreenId::CopyChannel);
+            }
+            if (button->action == core::ButtonAction::Released && !encoderPushWasLong_) {
                 mode_ = mode_ == ParameterMode::Gain      ? ParameterMode::Pan
                         : mode_ == ParameterMode::Pan     ? ParameterMode::Position
                                                           : ParameterMode::Gain;

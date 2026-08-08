@@ -27,6 +27,8 @@ public:
     [[nodiscard]] const storage::ProjectPaths& paths() const noexcept { return paths_; }
 
     [[nodiscard]] const std::vector<Deck>& decks() const noexcept { return decks_; }
+    [[nodiscard]] const Deck* findDeck(DeckId id) const noexcept;
+    [[nodiscard]] Deck* findDeck(DeckId id) noexcept;
 
     [[nodiscard]] const Deck& activeDeck() const noexcept { return decks_[activeDeckIndex_]; }
     [[nodiscard]] Deck& mutableActiveDeck() noexcept { return decks_[activeDeckIndex_]; }
