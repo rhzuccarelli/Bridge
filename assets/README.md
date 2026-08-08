@@ -15,4 +15,6 @@ Coverage is ASCII 32–126. Rows are top to bottom, MSB is the leftmost pixel; s
 `include/aw/display/Font.hpp` for the exact layout the renderer expects.
 
 `scripts/generate-fonts.py` writes `src/display/GeneratedFonts.inc`. The generated
-file is checked in, so neither the Pi build nor the runtime depends on Pillow.
+file is checked in, so neither the Pi build nor the runtime depends on Pillow. Glyphs
+are rasterized directly onto their final pixel grid; resizing a smaller bitmap is
+forbidden because non-integer scaling produces uneven stroke thickness on the OLED.
