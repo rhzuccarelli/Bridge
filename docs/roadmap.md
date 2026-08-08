@@ -111,18 +111,18 @@ one debounced press/release pair, and a held push produced one long-press follow
 **Complete.**
 
 The SSD1306/SH1106 SPI transport was already completed and hardware-tested in Phase
-1.5. Phase 7 adds checked-in 6×8 and 12×16 bitmap fonts, text/alignment, waveform and
+1.5. Phase 7 adds checked-in 8×12 and 12×16 bitmap fonts, text/alignment, waveform and
 meter primitives, scrolling project selection, and real 128×64 layouts for Home,
 Project Browser, Track View, Playback, Import, Export and Settings. Import and Export
 were initially explicit Phase 8 boundaries and are now connected to the MTP workflow.
 
-Track View always shows the six synchronized stereo lanes. The four track keys use
-two banks: short encoder-push cycles Gain/Pan/Position, while long encoder-push toggles
-bank B1 (tracks 1–4) and B2 (tracks 5–6). The current bank is visible in the header.
+Track View covers the six synchronized stereo lanes with direct Track 1–6 controls.
+There is no bank state. The 128×64 prototype shows four readable rows at once and
+automatically reveals tracks 5–6 when either is selected.
 
 ## Phase 8 — MTP
 
-**Implemented; real TP-7 transfer acceptance pending.**
+**Complete and accepted with a real TP-7.**
 
 libusb hotplug and libmtp sessions now feed an explicit, one-folder-at-a-time WAV
 browser on a single background I/O worker. Selected TP-7 objects stream into temporary
@@ -138,7 +138,7 @@ second explicit Export press on the overwrite screen. Cancelling is checked at e
 render and MTP chunk boundary.
 
 The Pi build is accepted against libusb 1.0.28 and libmtp 1.1.22, with both CTest
-targets passing. See `docs/phase8-tp7-test.md` for the remaining physical transfer test.
+targets passing. Physical import/export was then accepted with a real TP-7.
 
 ## Later
 

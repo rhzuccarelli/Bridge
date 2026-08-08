@@ -10,8 +10,7 @@
 namespace aw::ui {
 
 /// The main editing view: six synchronized stereo tracks with waveform overviews and
-/// meters. Physical-button banking is finalized in Phase 7; this screen
-/// consumes the resulting focused-track events. The encoder adjusts the
+/// meters. Six direct track buttons choose the focused lane. The encoder adjusts the
 /// current parameter mode (gain / pan / position), and encoder push cycles it.
 class TrackViewScreen final : public Screen {
 public:
@@ -30,7 +29,6 @@ public:
 
     [[nodiscard]] core::TrackId focusedTrack() const noexcept { return focusedTrack_; }
     [[nodiscard]] ParameterMode parameterMode() const noexcept { return mode_; }
-    [[nodiscard]] std::uint8_t trackBank() const noexcept { return trackBank_; }
 
 private:
     project::ProjectManager& projects_;
@@ -38,8 +36,6 @@ private:
     DirtyFlag dirty_;
     core::TrackId focusedTrack_{core::kInvalidTrackId};
     ParameterMode mode_{ParameterMode::Gain};
-    std::uint8_t trackBank_{0};
-    bool encoderPushWasLong_{false};
     std::array<float, project::kTrackCount> levels_{};
 };
 

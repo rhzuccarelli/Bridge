@@ -64,7 +64,7 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
         const int count = static_cast<int>(browser_.entries().size());
         selection_ = std::clamp(selection_ + encoder->delta, 0, std::max(0, count - 1));
         if (selection_ < scrollOffset_) scrollOffset_ = selection_;
-        if (selection_ >= scrollOffset_ + 5) scrollOffset_ = selection_ - 4;
+        if (selection_ >= scrollOffset_ + 3) scrollOffset_ = selection_ - 2;
         dirty_.set(); return NavigationRequest::none();
     }
     if (const auto* button = std::get_if<events::ButtonEvent>(&event)) {
@@ -113,36 +113,36 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
 void ImportScreen::render(display::Painter& painter) {
     painter.clear(display::palette::kBackground);
     const auto& font = display::smallFont();
-    painter.fillRect({0, 0, 128, 10}, display::palette::kSurface);
-    painter.drawText(2, 1, "IMPORT TP-7", font, display::palette::kText);
+    painter.fillRect({0, 0, 128, 12}, display::palette::kSurface);
+    painter.drawText(2, 0, "IMPORT TP-7", font, display::palette::kText);
     if (scanning_) {
-        painter.drawTextIn({0, 25, 128, 8}, "READING DEVICE...", font,
+        painter.drawTextIn({0, 24, 128, 12}, "READING TP-7", font,
                            display::palette::kText, display::TextAlign::Center);
     } else if (transferInProgress_) {
-        painter.drawTextIn({0, 18, 128, 8}, "COPYING TO BRIDGE", font,
+        painter.drawTextIn({0, 16, 128, 12}, "COPYING", font,
                            display::palette::kText, display::TextAlign::Center);
         painter.drawMeter({8, 34, 112, 8}, static_cast<float>(progressPercent_) / 100.0F, false);
-        painter.drawTextIn({0, 48, 128, 8}, "STOP: CANCEL", font,
+        painter.drawTextIn({0, 48, 128, 12}, "STOP:CANCEL", font,
                            display::palette::kTextDim, display::TextAlign::Center);
     } else if (lastError_ != core::ErrorCode::Unknown) {
-        painter.drawTextIn({0, 22, 128, 8}, core::toString(lastError_), font,
+        painter.drawTextIn({0, 20, 128, 12}, core::toString(lastError_), font,
                            display::palette::kText, display::TextAlign::Center);
-        painter.drawTextIn({0, 38, 128, 8}, "BACK / TRY AGAIN", font,
+        painter.drawTextIn({0, 38, 128, 12}, "BACK / RETRY", font,
                            display::palette::kTextDim, display::TextAlign::Center);
     } else {
         std::string breadcrumb = browser_.breadcrumbText();
-        if (breadcrumb.size() > 19) breadcrumb = breadcrumb.substr(breadcrumb.size() - 19);
-        painter.drawText(2, 11, breadcrumb, font, display::palette::kTextDim);
-        for (int row = 0; row < 5; ++row) {
+        if (breadcrumb.size() > 15) breadcrumb = breadcrumb.substr(breadcrumb.size() - 15);
+        painter.drawText(2, 13, breadcrumb, font, display::palette::kTextDim);
+        for (int row = 0; row < 3; ++row) {
             const int index = scrollOffset_ + row;
             if (index >= static_cast<int>(browser_.entries().size())) break;
             const auto& entry = browser_.entries()[static_cast<std::size_t>(index)];
-            const auto y = static_cast<std::int16_t>(21 + row * 8);
-            if (index == selection_) painter.drawRect({0, static_cast<std::int16_t>(y - 1), 128, 8},
+            const auto y = static_cast<std::int16_t>(27 + row * 12);
+            if (index == selection_) painter.drawRect({0, static_cast<std::int16_t>(y - 1), 128, 12},
                                                        display::palette::kAccent);
             painter.drawText(2, y, entry.isFolder ? ">" : (entry.isSelected ? "X" : " "),
                              font, display::palette::kText);
-            std::string_view name = entry.name.size() > 17 ? std::string_view{entry.name}.substr(0, 17)
+            std::string_view name = entry.name.size() > 13 ? std::string_view{entry.name}.substr(0, 13)
                                                            : std::string_view{entry.name};
             painter.drawText(12, y, name, font, display::palette::kText);
         }

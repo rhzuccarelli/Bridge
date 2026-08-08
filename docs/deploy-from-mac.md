@@ -267,7 +267,7 @@ you can drive everything from your Mac's keyboard:
 
 | Key | | Key | |
 | --- | --- | --- | --- |
-| `space` | Play | `1`–`4` | Track 1–4 |
+| `space` | Play | `1`–`6` | Track 1–6 |
 | `s` | Stop | `Enter` | Encoder push |
 | `r` | Record | `←` `→` `↑` `↓` | Encoder turn |
 | `i` / `e` | Import / Export | `b` or `Esc` | Back |
@@ -406,9 +406,8 @@ For the TP-7 monitoring path used by this prototype, launch with its ALSA card t
 AW_ALSA_DEVICE=hw:2,0 ./scripts/run-pi.sh --oled
 ```
 
-In Tracks, a short encoder-push cycles `GAIN`, `PAN`, and `POS`. Hold the encoder for
-at least 500 ms to toggle `B1`/`B2`; B1 maps track keys to stereo lanes 1–4 and B2
-maps the first two track keys to lanes 5–6.
+In Tracks, a short encoder-push cycles `GAIN`, `PAN`, and `POS`. Track keys `1`–`6`
+select the six stereo lanes directly; there is no bank mode.
 
 ---
 

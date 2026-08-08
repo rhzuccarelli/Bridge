@@ -8,7 +8,7 @@ ESP32-P4 there may be no filesystem available at that point at all.
 
 Phase 7 generates two fixed-pitch bitmap fonts as C++ arrays:
 
-- `small` — 6×8, list rows, labels, breadcrumbs.
+- `small` — 8×12, list rows, labels, breadcrumbs.
 - `large` — 12×16, the transport timecode.
 
 Coverage is ASCII 32–126. Rows are top to bottom, MSB is the leftmost pixel; see

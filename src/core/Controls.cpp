@@ -16,6 +16,8 @@ std::string_view toString(ButtonId id) noexcept {
         case ButtonId::Track2: return "Track2";
         case ButtonId::Track3: return "Track3";
         case ButtonId::Track4: return "Track4";
+        case ButtonId::Track5: return "Track5";
+        case ButtonId::Track6: return "Track6";
         case ButtonId::EncoderPush: return "EncoderPush";
         case ButtonId::Count: return "Count";
     }

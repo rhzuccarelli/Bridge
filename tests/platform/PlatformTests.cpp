@@ -96,6 +96,8 @@ AW_TEST(KeyMap, MapsTrackKeysInOrder) {
     AW_CHECK_EQ(desktop::mapKey('2').button, core::ButtonId::Track2);
     AW_CHECK_EQ(desktop::mapKey('3').button, core::ButtonId::Track3);
     AW_CHECK_EQ(desktop::mapKey('4').button, core::ButtonId::Track4);
+    AW_CHECK_EQ(desktop::mapKey('5').button, core::ButtonId::Track5);
+    AW_CHECK_EQ(desktop::mapKey('6').button, core::ButtonId::Track6);
 }
 
 AW_TEST(KeyMap, MapsEncoderToArrowKeys) {
@@ -140,16 +142,16 @@ AW_TEST(VirtualPanel, CentresTheCanvasAndLeavesAStrip) {
     AW_CHECK_EQ(strip.height, std::int16_t{80});
 }
 
-AW_TEST(VirtualPanel, ProvidesTwelveKeysCoveringTheStrip) {
+AW_TEST(VirtualPanel, ProvidesFourteenKeysCoveringTheStrip) {
     const desktop::VirtualPanelLayout layout{480, 320, 320, 240};
-    AW_REQUIRE(layout.keys().size() == 12);
+    AW_REQUIRE(layout.keys().size() == 14);
 
-    // Six columns of 80, two rows of 40.
-    AW_CHECK_EQ(layout.keys()[0].area.width, std::int16_t{80});
+    // Seven columns, two rows of 40.
+    AW_CHECK_EQ(layout.keys()[0].area.width, std::int16_t{68});
     AW_CHECK_EQ(layout.keys()[0].area.height, std::int16_t{40});
     AW_CHECK_EQ(layout.keys()[0].id, core::ButtonId::Play);
-    AW_CHECK_EQ(layout.keys()[6].id, core::ButtonId::Track1);
-    AW_CHECK_EQ(layout.keys()[6].area.y, std::int16_t{280});  // Second row.
+    AW_CHECK_EQ(layout.keys()[7].id, core::ButtonId::Track1);
+    AW_CHECK_EQ(layout.keys()[7].area.y, std::int16_t{280});  // Second row.
 }
 
 AW_TEST(VirtualPanel, HitTestsKeysInTheStrip) {

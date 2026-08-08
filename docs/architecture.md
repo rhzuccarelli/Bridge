@@ -387,7 +387,18 @@ depth creeps in one screen at a time unless something stops it.
 Interaction rules:
 
 - Projects contain exactly six synchronized stereo tracks. The prototype's four physical
-  track buttons require a shallow bank/focus mapping, finalized with the Phase 7 UI.
+  the planned panel has six track buttons and six faders, so tracks 1–6 map directly
+  with no hidden bank state.
+
+### Cross-deck channel routing requirement
+
+A future comp/edit command must address source and destination sides independently.
+For example, “Deck A / track 5 / left” may feed “Deck C / track 2 / right” while the
+other side of Deck C track 2 keeps a different source. The existing clip model already
+identifies an immutable source file and source channel; the editor must add an explicit
+destination side (`Left`, `Right`, or `Stereo`) instead of duplicating every mono source
+to both destination channels. This remains non-destructive: the command creates a
+reference and never copies or rewrites the source WAV.
 - Encoder push cycles what the encoder edits (gain → pan → position) rather than
   opening a submenu.
 - Transport, Back, Undo, Save and Import/Export work on **every** screen, handled

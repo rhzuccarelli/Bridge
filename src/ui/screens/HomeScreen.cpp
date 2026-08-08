@@ -54,19 +54,19 @@ void HomeScreen::update(std::uint32_t /*elapsedMillis*/) {
 void HomeScreen::render(display::Painter& painter) {
     painter.clear(display::palette::kBackground);
     const auto& font = display::smallFont();
-    painter.fillRect({0, 0, 128, 10}, display::palette::kSurface);
-    painter.drawTextIn({2, 1, 94, 8}, title(), font, display::palette::kText,
+    painter.fillRect({0, 0, 128, 12}, display::palette::kSurface);
+    painter.drawTextIn({2, 0, 86, 12}, title().substr(0, 10), font, display::palette::kText,
                        display::TextAlign::Left);
     const char* state = engine_.transport().state() == events::TransportState::Playing ? "PLAY" :
                         engine_.transport().state() == events::TransportState::Recording ? "REC" :
                         engine_.transport().state() == events::TransportState::Paused ? "PAUS" : "STOP";
-    painter.drawTextIn({98, 1, 28, 8}, state, font, display::palette::kText,
+    painter.drawTextIn({90, 0, 36, 12}, state, font, display::palette::kText,
                        display::TextAlign::Right);
     constexpr std::array<std::string_view, 4> actions{"PROJECTS", "TRACKS", "PLAYBACK", "SETTINGS"};
     for (int row = 0; row < kActionCount; ++row) {
-        const std::int16_t y = static_cast<std::int16_t>(13 + row * 12);
+        const std::int16_t y = static_cast<std::int16_t>(14 + row * 12);
         if (row == selection_) painter.drawRect(
-            {1, static_cast<std::int16_t>(y - 1), 126, 10}, display::palette::kAccent);
+            {1, static_cast<std::int16_t>(y - 1), 126, 12}, display::palette::kAccent);
         painter.drawText(5, y, row == selection_ ? ">" : " ", font, display::palette::kText);
         painter.drawText(14, y, actions[static_cast<std::size_t>(row)], font,
                          display::palette::kText);

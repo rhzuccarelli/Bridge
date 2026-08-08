@@ -131,36 +131,36 @@ NavigationRequest ExportScreen::handleEvent(const events::Event& event) {
 void ExportScreen::render(display::Painter& painter) {
     painter.clear(display::palette::kBackground);
     const auto& font = display::smallFont();
-    painter.fillRect({0, 0, 128, 10}, display::palette::kSurface);
-    painter.drawText(2, 1, "EXPORT TP-7", font, display::palette::kText);
+    painter.fillRect({0, 0, 128, 12}, display::palette::kSurface);
+    painter.drawText(2, 0, "EXPORT TP-7", font, display::palette::kText);
     if (stage_ == Stage::Connecting || stage_ == Stage::Checking) {
-        painter.drawTextIn({0, 25, 128, 8}, stage_ == Stage::Connecting ? "CONNECTING..." : "CHECKING NAME...",
+        painter.drawTextIn({0, 24, 128, 12}, stage_ == Stage::Connecting ? "CONNECTING" : "CHECKING NAME",
                            font, display::palette::kText, display::TextAlign::Center);
     } else if (stage_ == Stage::Transferring) {
-        painter.drawTextIn({0, 18, 128, 8}, progressPercent_ < 50 ? "RENDERING 48K" : "SENDING TO TP-7",
+        painter.drawTextIn({0, 16, 128, 12}, progressPercent_ < 50 ? "RENDERING 48K" : "SENDING TP-7",
                            font, display::palette::kText, display::TextAlign::Center);
         painter.drawMeter({8, 34, 112, 8}, static_cast<float>(progressPercent_) / 100.0F, false);
-        painter.drawTextIn({0, 48, 128, 8}, "STOP: CANCEL", font,
+        painter.drawTextIn({0, 48, 128, 12}, "STOP:CANCEL", font,
                            display::palette::kTextDim, display::TextAlign::Center);
     } else if (stage_ == Stage::ConfirmingOverwrite) {
-        painter.drawTextIn({0, 17, 128, 8}, "FILE EXISTS", font,
+        painter.drawTextIn({0, 14, 128, 12}, "FILE EXISTS", font,
                            display::palette::kText, display::TextAlign::Center);
-        painter.drawTextIn({0, 31, 128, 8}, "EXPORT: OVERWRITE", font,
+        painter.drawTextIn({0, 28, 128, 12}, "EXPORT:REPLACE", font,
                            display::palette::kText, display::TextAlign::Center);
-        painter.drawTextIn({0, 44, 128, 8}, "BACK: CANCEL", font,
+        painter.drawTextIn({0, 44, 128, 12}, "BACK:CANCEL", font,
                            display::palette::kTextDim, display::TextAlign::Center);
     } else if (lastError_ != core::ErrorCode::Unknown) {
-        painter.drawTextIn({0, 22, 128, 8}, core::toString(lastError_), font,
+        painter.drawTextIn({0, 22, 128, 12}, core::toString(lastError_), font,
                            display::palette::kText, display::TextAlign::Center);
     } else {
         const std::string_view deck = projects_.hasProject()
                                           ? projects_.project().activeDeck().name
                                           : std::string_view{"NO PROJECT"};
-        painter.drawTextIn({0, 17, 128, 8}, deck, font,
+        painter.drawTextIn({0, 14, 128, 12}, deck.substr(0, 15), font,
                            display::palette::kText, display::TextAlign::Center);
-        painter.drawTextIn({0, 30, 128, 8}, "ONE 48K / UP TO 12CH", font,
+        painter.drawTextIn({0, 29, 128, 12}, "48K / UP TO 12CH", font,
                            display::palette::kTextDim, display::TextAlign::Center);
-        painter.drawTextIn({0, 46, 128, 8}, "PRESS EXPORT", font,
+        painter.drawTextIn({0, 46, 128, 12}, "PRESS EXPORT", font,
                            display::palette::kText, display::TextAlign::Center);
     }
     dirty_.clear();

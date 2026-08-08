@@ -5,8 +5,8 @@
 namespace aw::display {
 namespace {
 
-constexpr std::uint8_t kSmallWidth = 6;
-constexpr std::uint8_t kSmallHeight = 8;
+constexpr std::uint8_t kSmallWidth = 8;
+constexpr std::uint8_t kSmallHeight = 12;
 constexpr std::uint8_t kLargeWidth = 12;
 constexpr std::uint8_t kLargeHeight = 16;
 

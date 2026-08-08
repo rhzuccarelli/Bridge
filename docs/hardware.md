@@ -343,7 +343,7 @@ Works over SSH or on a laptop, and is the fastest way to drive the UI:
 
 | Key | Control | Key | Control |
 | --- | --- | --- | --- |
-| `space` | Play | `1`–`4` | Track 1–4 |
+| `space` | Play | `1`–`6` | Track 1–6 |
 | `s` | Stop | `Enter` | Encoder push |
 | `r` | Record | `←` `→` | Encoder turn |
 | `i` | Import | `↑` `↓` | Encoder turn |

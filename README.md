@@ -16,7 +16,7 @@ only `src/platform/` changes when the port happens.
 
 ## Status
 
-**Phases 1–4 complete.** The portable architecture, Raspberry Pi prototype I/O,
+**Phases 1–8 complete.** The portable architecture, Raspberry Pi prototype I/O,
 streaming WAV layer, project manager, non-destructive model, and realtime multitrack
 playback engine are implemented. Playback uses bounded local-storage buffers; the TP-7
 is exclusively an explicit MTP import/export endpoint and is never a live audio source.

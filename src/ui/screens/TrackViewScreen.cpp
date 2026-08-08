@@ -22,16 +22,6 @@ NavigationRequest TrackViewScreen::handleEvent(const events::Event& event) {
     if (const auto* button = std::get_if<events::ButtonEvent>(&event)) {
         if (button->id == core::ButtonId::EncoderPush) {
             if (button->action == core::ButtonAction::Pressed) {
-                encoderPushWasLong_ = false;
-                return NavigationRequest::none();
-            }
-            if (button->action == core::ButtonAction::LongPressed) {
-                encoderPushWasLong_ = true;
-                trackBank_ = trackBank_ == 0 ? 1 : 0;
-                dirty_.set();
-                return NavigationRequest::none();
-            }
-            if (button->action == core::ButtonAction::Released && !encoderPushWasLong_) {
                 mode_ = mode_ == ParameterMode::Gain      ? ParameterMode::Pan
                         : mode_ == ParameterMode::Pan     ? ParameterMode::Position
                                                           : ParameterMode::Gain;
@@ -49,13 +39,12 @@ NavigationRequest TrackViewScreen::handleEvent(const events::Event& event) {
             case core::ButtonId::Track1:
             case core::ButtonId::Track2:
             case core::ButtonId::Track3:
-            case core::ButtonId::Track4: {
+            case core::ButtonId::Track4:
+            case core::ButtonId::Track5:
+            case core::ButtonId::Track6: {
                 const auto index = static_cast<std::uint8_t>(button->id) -
                                    static_cast<std::uint8_t>(core::ButtonId::Track1);
-                const auto track = static_cast<core::TrackId>(index + 1 + trackBank_ * 4);
-                if (track <= project::kTrackCount) {
-                    focusedTrack_ = track;
-                }
+                focusedTrack_ = static_cast<core::TrackId>(index + 1);
                 dirty_.set();
                 return NavigationRequest::none();
             }
@@ -87,32 +76,32 @@ void TrackViewScreen::render(display::Painter& painter) {
     const auto& font = display::smallFont();
     const char* mode = mode_ == ParameterMode::Gain ? "GAIN" :
                        mode_ == ParameterMode::Pan ? "PAN" : "POS";
-    painter.fillRect({0, 0, 128, 10}, display::palette::kSurface);
+    painter.fillRect({0, 0, 128, 12}, display::palette::kSurface);
     const std::string_view deckName = projects_.hasProject()
                                           ? projects_.project().activeDeck().name
                                           : std::string_view{"NO DECK"};
-    painter.drawText(2, 1, deckName.substr(0, 13), font, display::palette::kText);
-    char status[9];
-    std::snprintf(status, sizeof(status), "B%u %s", trackBank_ + 1, mode);
-    painter.drawTextIn({78, 1, 48, 8}, status, font, display::palette::kText,
+    painter.drawText(2, 0, deckName.substr(0, 9), font, display::palette::kText);
+    painter.drawTextIn({88, 0, 38, 12}, mode, font, display::palette::kText,
                        display::TextAlign::Right);
     const project::Timeline* timeline = projects_.hasProject() ? &projects_.project().timeline() : nullptr;
-    for (std::size_t index = 0; index < project::kTrackCount; ++index) {
-        const auto y = static_cast<std::int16_t>(11 + index * 9);
+    const std::size_t first = focusedTrack_ > 4 ? 2U : 0U;
+    for (std::size_t row = 0; row < 4 && first + row < project::kTrackCount; ++row) {
+        const std::size_t index = first + row;
+        const auto y = static_cast<std::int16_t>(14 + row * 12);
         const bool focused = focusedTrack_ == static_cast<core::TrackId>(index + 1);
-        if (focused) painter.fillRect({0, y, 128, 9}, display::palette::kSurface);
+        if (focused) painter.drawRect({0, static_cast<std::int16_t>(y - 1), 128, 12}, display::palette::kAccent);
         char label[5];
         std::snprintf(label, sizeof(label), "%c%zu", focused ? '>' : ' ', index + 1);
         painter.drawText(1, y, label, font, display::palette::kText);
         if (timeline != nullptr && index < timeline->tracks.size()) {
             const project::Track& track = timeline->tracks[index];
-            std::string_view name = track.name.size() > 10 ? std::string_view{track.name}.substr(0, 10)
+            std::string_view name = track.name.size() > 6 ? std::string_view{track.name}.substr(0, 6)
                                                            : std::string_view{track.name};
             painter.drawText(15, y, name, font, display::palette::kText);
-            if (track.muted) painter.drawText(79, y, "M", font, display::palette::kTextDim);
-            if (track.soloed) painter.drawText(86, y, "S", font, display::palette::kText);
+            if (track.muted) painter.drawText(72, y, "M", font, display::palette::kTextDim);
+            if (track.soloed) painter.drawText(80, y, "S", font, display::palette::kText);
         }
-        painter.drawMeter({96, static_cast<std::int16_t>(y + 2), 30, 5}, levels_[index], false);
+        painter.drawMeter({90, static_cast<std::int16_t>(y + 2), 36, 7}, levels_[index], false);
     }
     dirty_.clear();
 }

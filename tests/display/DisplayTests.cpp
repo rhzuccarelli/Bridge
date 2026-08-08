@@ -100,7 +100,7 @@ AW_TEST(Painter, BitmapTextDrawsVisiblePixels) {
     framebuffer.fill(display::palette::kBackground);
     display::Painter painter{framebuffer};
     const auto width = painter.drawText(1, 1, "A1", display::smallFont(), display::palette::kText);
-    AW_CHECK_EQ(width, std::int16_t{12});
+    AW_CHECK_EQ(width, std::int16_t{16});
     AW_CHECK(std::any_of(framebuffer.pixels().begin(), framebuffer.pixels().end(),
                          [](display::Color pixel) { return pixel == display::palette::kText; }));
 }

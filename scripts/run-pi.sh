@@ -39,7 +39,7 @@ fi
 echo "projects : $AW_PROJECTS_ROOT"
 echo "display  : $AW_DISPLAY"
 echo "audio    : $AW_ALSA_DEVICE (48 kHz, packed 24-bit, stereo)"
-echo "keys     : space=play s=stop r=rec 1-4=track enter=push arrows=encoder q=quit"
+echo "keys     : space=play s=stop r=rec 1-6=track enter=push arrows=encoder q=quit"
 echo
 
 exec "$BINARY"
