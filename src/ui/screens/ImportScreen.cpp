@@ -15,6 +15,8 @@ ImportScreen::ImportScreen(mtp::MtpManager& manager, mtp::MtpBrowser& browser,
 
 void ImportScreen::onEnter() {
     selection_ = 0; scrollOffset_ = 0; transferInProgress_ = false; progressPercent_ = 0;
+    importCompleted_ = false;
+    workerCompletionPending_.store(false, std::memory_order_release);
     lastError_ = core::ErrorCode::Unknown; scanning_ = true;
     const std::uint32_t scanId = ++jobId_;
     auto accepted = tasks_.submit([this, scanId] {
@@ -58,6 +60,13 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
                 importer_.requestCancel();
         return NavigationRequest::none();
     }
+    if (importCompleted_) {
+        if (const auto* button = std::get_if<events::ButtonEvent>(&event);
+            button && button->id == core::ButtonId::EncoderPush &&
+            button->action == core::ButtonAction::Pressed)
+            return NavigationRequest::back();
+        return NavigationRequest::none();
+    }
     if (scanning_) return NavigationRequest::none();
 
     if (const auto* encoder = std::get_if<events::EncoderEvent>(&event)) {
@@ -91,8 +100,15 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
                 if (!valid) lastError_ = valid.error().code();
                 else {
                     transferInProgress_ = true; progressPercent_ = 0;
+                    workerCompletionPending_.store(false, std::memory_order_release);
                     (void)tasks_.submit([this, importId, plan = std::move(plan)] {
-                        (void)importer_.run(plan, importId);
+                        const core::Status result = importer_.run(plan, importId);
+                        workerError_.store(result ? core::ErrorCode::Unknown
+                                                  : result.error().code(),
+                                           std::memory_order_relaxed);
+                        workerSucceeded_.store(static_cast<bool>(result),
+                                               std::memory_order_relaxed);
+                        workerCompletionPending_.store(true, std::memory_order_release);
                     });
                 }
             }
@@ -116,14 +132,33 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
             if (!valid) lastError_ = valid.error().code();
             else {
                 transferInProgress_ = true; progressPercent_ = 0;
+                workerCompletionPending_.store(false, std::memory_order_release);
                 (void)tasks_.submit([this, importId, plan = std::move(plan)] {
-                    (void)importer_.run(plan, importId);
+                    const core::Status result = importer_.run(plan, importId);
+                    workerError_.store(result ? core::ErrorCode::Unknown
+                                              : result.error().code(),
+                                       std::memory_order_relaxed);
+                    workerSucceeded_.store(static_cast<bool>(result),
+                                           std::memory_order_relaxed);
+                    workerCompletionPending_.store(true, std::memory_order_release);
                 });
             }
             dirty_.set(); return NavigationRequest::none();
         }
     }
     return NavigationRequest::ignored();
+}
+
+void ImportScreen::update(std::uint32_t /*elapsedMillis*/) {
+    if (!workerCompletionPending_.exchange(false, std::memory_order_acq_rel)) return;
+    transferInProgress_ = false;
+    if (workerSucceeded_.load(std::memory_order_relaxed)) {
+        importCompleted_ = true;
+        lastError_ = core::ErrorCode::Unknown;
+    } else {
+        lastError_ = workerError_.load(std::memory_order_relaxed);
+    }
+    dirty_.set();
 }
 
 void ImportScreen::render(display::Painter& painter) {
@@ -139,6 +174,11 @@ void ImportScreen::render(display::Painter& painter) {
                            display::palette::kText, display::TextAlign::Center);
         painter.drawMeter({8, 34, 112, 8}, static_cast<float>(progressPercent_) / 100.0F, false);
         painter.drawTextIn({0, 48, 128, 12}, "STOP:CANCEL", font,
+                           display::palette::kTextDim, display::TextAlign::Center);
+    } else if (importCompleted_) {
+        painter.drawTextIn({0, 20, 128, 12}, "IMPORT DONE", font,
+                           display::palette::kText, display::TextAlign::Center);
+        painter.drawTextIn({0, 38, 128, 12}, "PUSH TO CONTINUE", font,
                            display::palette::kTextDim, display::TextAlign::Center);
     } else if (lastError_ != core::ErrorCode::Unknown) {
         const std::string_view message = lastError_ == core::ErrorCode::InvalidState

@@ -1,6 +1,7 @@
 #include "aw/project/ImportService.hpp"
 
 #include "aw/audio/WavReader.hpp"
+#include "aw/core/Logger.hpp"
 #include "aw/project/Command.hpp"
 #include "aw/storage/ProjectPaths.hpp"
 
@@ -10,6 +11,8 @@
 
 namespace aw::project {
 namespace {
+
+constexpr std::string_view kLogModule = "import";
 
 struct ImportedDeck {
     std::string name;
@@ -177,6 +180,7 @@ core::Status ImportService::run(const ImportPlan& plan, std::uint32_t jobId) {
             return !cancelRequested_.load(std::memory_order_acquire);
         };
         core::Status transfer = mtp_.readObject(item.sourceHandle, sink, progress);
+        core::log::info(kLogModule, "MTP download returned for " + item.sourceName);
         if (writeError) transfer = *writeError;
         if (cancelRequested_.load(std::memory_order_acquire))
             transfer = core::makeError(core::ErrorCode::Cancelled, "import cancelled");
@@ -203,11 +207,16 @@ core::Status ImportService::run(const ImportPlan& plan, std::uint32_t jobId) {
         }
         imported.push_back({stem(target.filename().string()), target.filename().string(),
                             metadata.value().format.channels, metadata.value().frameCount});
+        core::log::info(kLogModule, "validated local WAV: " + target.filename().string() +
+                                         " (" + std::to_string(metadata.value().format.channels) +
+                                         " channels)");
         completedFiles.push_back(target);
         completedBytes += item.sizeBytes;
     }
 
+    core::log::info(kLogModule, "applying imported deck to project");
     core::Status applied = projects_.execute(std::make_unique<AddImportedDecksCommand>(imported));
+    core::log::info(kLogModule, applied ? "import completed" : "import project update failed");
     if (!applied) {
         for (const core::Path& path : completedFiles) (void)storage_.remove(path);
     }

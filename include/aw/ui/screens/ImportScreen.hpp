@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "aw/mtp/MtpBrowser.hpp"
 #include "aw/mtp/MtpManager.hpp"
 #include "aw/project/ImportService.hpp"
@@ -30,6 +32,7 @@ public:
 
     void onEnter() override;
     [[nodiscard]] NavigationRequest handleEvent(const events::Event& event) override;
+    void update(std::uint32_t elapsedMillis) override;
     [[nodiscard]] bool isDirty() const noexcept override { return dirty_.isSet(); }
     void render(display::Painter& painter) override;
 
@@ -46,6 +49,10 @@ private:
     std::uint8_t progressPercent_{0};
     std::uint32_t jobId_{0};
     bool scanning_{false};
+    bool importCompleted_{false};
+    std::atomic<bool> workerCompletionPending_{false};
+    std::atomic<bool> workerSucceeded_{false};
+    std::atomic<core::ErrorCode> workerError_{core::ErrorCode::Unknown};
     core::ErrorCode lastError_{core::ErrorCode::Unknown};
 };
 
