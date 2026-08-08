@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <span>
@@ -547,6 +548,31 @@ AW_TEST(WavWriter, WritesAPlayableWaveThatRoundTripsThroughReader) {
     AW_CHECK(nearlyEqual(readBack.channel(1)[1], 0.25F));
     AW_CHECK(nearlyEqual(readBack.channel(0)[2], 0.75F));
     AW_CHECK(nearlyEqual(readBack.channel(1)[2], -0.75F));
+}
+
+AW_TEST(WavWriter, PreservesTp7AcidTempoChunk) {
+    awtest::MemoryStorage storage;
+    audio::AcidMetadata acid;
+    acid.bytes[0] = std::byte{1};
+    acid.bytes[4] = std::byte{48};
+    acid.bytes[6] = std::byte{0};
+    acid.bytes[7] = std::byte{128};
+    acid.bytes[16] = std::byte{4};
+    acid.bytes[18] = std::byte{4};
+    const auto tempo = std::bit_cast<std::array<std::byte, 4>>(110.0F);
+    std::copy(tempo.begin(), tempo.end(), acid.bytes.begin() + 20);
+
+    audio::WavWriter writer;
+    AW_REQUIRE(writer.create(storage, "/tempo.wav", core::kNativeFormat, acid));
+    audio::AudioBuffer frame{2, 1};
+    AW_REQUIRE(writer.write(frame));
+    AW_REQUIRE(writer.close());
+
+    const auto metadata = audio::WavReader::readMetadata(storage, "/tempo.wav");
+    AW_REQUIRE(metadata.hasValue());
+    AW_REQUIRE(metadata.value().acid.has_value());
+    AW_CHECK_EQ(metadata.value().acid->tempoBpm(), 110.0F);
+    AW_CHECK(metadata.value().acid->bytes == acid.bytes);
 }
 
 AW_TEST(WavWriter, RejectsMoreThanTwelveChannels) {

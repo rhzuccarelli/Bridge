@@ -201,6 +201,10 @@ core::Result<WavMetadata> parseHeader(hal::FileHandle& file) {
             if (auto status = skipBytes(file, size); !status) {
                 return status.error();
             }
+        } else if (id == "acid" && size == 24) {
+            AcidMetadata acid;
+            if (auto status = readExact(file, acid.bytes); !status) return status.error();
+            metadata.acid = acid;
         } else if (id == "LIST") {
             constexpr std::uint32_t kMaxInfoBytes = 1024U * 1024U;
             if (size > kMaxInfoBytes) {

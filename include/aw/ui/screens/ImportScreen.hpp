@@ -11,9 +11,8 @@ namespace aw::ui {
 
 /// Browse the connected TP-7 and choose recordings to copy in.
 ///
-/// Flow: encoder scrolls, push toggles selection on a file or enters a folder,
-/// Import confirms.  Selection is explicit and multi - the user picks takes,
-/// then commits once, rather than triggering a transfer per press.
+/// Flow: encoder scrolls; first push selects a file; pushing the selected file
+/// again confirms the import. Long encoder press goes back.
 ///
 /// The screen holds no MTP state: it renders `browser.entries()`.  When no
 /// device is connected it says so and offers nothing else, which is a better

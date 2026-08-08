@@ -87,7 +87,8 @@ NavigationRequest ExportScreen::handleEvent(const events::Event& event) {
             if (button->id == core::ButtonId::Back) {
                 stage_ = Stage::Selecting; dirty_.set(); return NavigationRequest::none();
             }
-            if (button->id == core::ButtonId::Export) {
+            if (button->id == core::ButtonId::Export ||
+                button->id == core::ButtonId::EncoderPush) {
                 project::ExportPlan plan;
                 plan.targetStorage = storageId_.load(std::memory_order_acquire);
                 plan.targetFolder = folderId_.load(std::memory_order_acquire);
@@ -100,7 +101,9 @@ NavigationRequest ExportScreen::handleEvent(const events::Event& event) {
             }
             return NavigationRequest::none();
         }
-        if (stage_ == Stage::Selecting && button->id == core::ButtonId::Export) {
+        if (stage_ == Stage::Selecting &&
+            (button->id == core::ButtonId::Export ||
+             button->id == core::ButtonId::EncoderPush)) {
             if (storageId_.load(std::memory_order_acquire) == 0) {
                 onEnter();
                 return NavigationRequest::none();
@@ -160,7 +163,7 @@ void ExportScreen::render(display::Painter& painter) {
                            display::palette::kText, display::TextAlign::Center);
         painter.drawTextIn({0, 29, 128, 12}, "48K / UP TO 12CH", font,
                            display::palette::kTextDim, display::TextAlign::Center);
-        painter.drawTextIn({0, 46, 128, 12}, "PRESS EXPORT", font,
+        painter.drawTextIn({0, 46, 128, 12}, "PUSH TO EXPORT", font,
                            display::palette::kText, display::TextAlign::Center);
     }
     dirty_.clear();

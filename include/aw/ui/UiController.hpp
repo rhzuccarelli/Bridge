@@ -78,6 +78,7 @@ private:
     Navigator navigator_;
     display::Painter painter_;
     events::SubscriptionId subscription_{events::kInvalidSubscription};
+    bool encoderPushWasLong_{false};
 };
 
 }  // namespace aw::ui

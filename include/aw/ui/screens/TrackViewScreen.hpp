@@ -10,13 +10,10 @@
 namespace aw::ui {
 
 /// The main editing view: six synchronized stereo tracks with waveform overviews and
-/// meters. Six direct track buttons choose the focused lane. The encoder adjusts the
-/// current parameter mode (gain / pan / position), and encoder push cycles it.
+/// meters. The encoder moves directly among the six lanes; there are no hidden
+/// gain/pan/position modes in the one-knob interface.
 class TrackViewScreen final : public Screen {
 public:
-    /// What the encoder currently edits on the focused track.
-    enum class ParameterMode : std::uint8_t { Gain, Pan, Position };
-
     TrackViewScreen(project::ProjectManager& projects, audio::AudioEngine& engine) noexcept;
 
     [[nodiscard]] ScreenId id() const noexcept override { return ScreenId::TrackView; }
@@ -28,16 +25,13 @@ public:
     void render(display::Painter& painter) override;
 
     [[nodiscard]] core::TrackId focusedTrack() const noexcept { return focusedTrack_; }
-    [[nodiscard]] ParameterMode parameterMode() const noexcept { return mode_; }
 
 private:
     project::ProjectManager& projects_;
     audio::AudioEngine& engine_;
     DirtyFlag dirty_;
     core::TrackId focusedTrack_{core::kInvalidTrackId};
-    ParameterMode mode_{ParameterMode::Gain};
     std::array<float, project::kTrackCount> levels_{};
-    bool encoderPushWasLong_{false};
 };
 
 }  // namespace aw::ui

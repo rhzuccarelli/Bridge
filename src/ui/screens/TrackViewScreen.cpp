@@ -4,6 +4,7 @@
 #include "aw/display/Font.hpp"
 
 #include <cstdio>
+#include <algorithm>
 
 namespace aw::ui {
 
@@ -21,22 +22,8 @@ NavigationRequest TrackViewScreen::handleEvent(const events::Event& event) {
     }
     if (const auto* button = std::get_if<events::ButtonEvent>(&event)) {
         if (button->id == core::ButtonId::EncoderPush) {
-            if (button->action == core::ButtonAction::Pressed) {
-                encoderPushWasLong_ = false;
-                return NavigationRequest::none();
-            }
-            if (button->action == core::ButtonAction::LongPressed) {
-                encoderPushWasLong_ = true;
-                return NavigationRequest::push(ScreenId::CopyChannel);
-            }
-            if (button->action == core::ButtonAction::Released && !encoderPushWasLong_) {
-                mode_ = mode_ == ParameterMode::Gain      ? ParameterMode::Pan
-                        : mode_ == ParameterMode::Pan     ? ParameterMode::Position
-                                                          : ParameterMode::Gain;
-                dirty_.set();
-                return NavigationRequest::none();
-            }
-            return NavigationRequest::none();
+            return button->action == core::ButtonAction::Pressed
+                       ? NavigationRequest::none() : NavigationRequest::ignored();
         }
         if (button->action != core::ButtonAction::Pressed) {
             return NavigationRequest::ignored();
@@ -64,9 +51,11 @@ NavigationRequest TrackViewScreen::handleEvent(const events::Event& event) {
     }
 
     if (const auto* encoder = std::get_if<events::EncoderEvent>(&event)) {
-        // Phase 3/4 turns this into an undoable command (gain/pan) or a seek.
-        (void)encoder;
-        (void)projects_;
+        int selected = focusedTrack_ == core::kInvalidTrackId
+                           ? 0 : static_cast<int>(focusedTrack_ - 1);
+        selected = std::clamp(selected + encoder->delta, 0,
+                              static_cast<int>(project::kTrackCount - 1));
+        focusedTrack_ = static_cast<core::TrackId>(selected + 1);
         dirty_.set();
         return NavigationRequest::none();
     }
@@ -82,14 +71,14 @@ void TrackViewScreen::update(std::uint32_t /*elapsedMillis*/) {
 void TrackViewScreen::render(display::Painter& painter) {
     painter.clear(display::palette::kBackground);
     const auto& font = display::smallFont();
-    const char* mode = mode_ == ParameterMode::Gain ? "GAIN" :
-                       mode_ == ParameterMode::Pan ? "PAN" : "POS";
+    const char* state = engine_.transport().state() == events::TransportState::Playing
+                            ? "PLAY" : "STOP";
     painter.fillRect({0, 0, 128, 12}, display::palette::kSurface);
     const std::string_view deckName = projects_.hasProject()
                                           ? projects_.project().activeDeck().name
                                           : std::string_view{"NO DECK"};
     painter.drawText(2, 0, deckName.substr(0, 9), font, display::palette::kText);
-    painter.drawTextIn({88, 0, 38, 12}, mode, font, display::palette::kText,
+    painter.drawTextIn({88, 0, 38, 12}, state, font, display::palette::kText,
                        display::TextAlign::Right);
     const project::Timeline* timeline = projects_.hasProject() ? &projects_.project().timeline() : nullptr;
     const std::size_t first = focusedTrack_ > 4 ? 2U : 0U;

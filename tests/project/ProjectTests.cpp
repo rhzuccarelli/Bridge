@@ -13,6 +13,7 @@
 
 #include <array>
 #include <algorithm>
+#include <bit>
 
 using namespace aw;
 
@@ -537,7 +538,10 @@ AW_TEST(ExportService, ExportsSixStereoTracksAsOneTwelveChannelWave) {
     audio::WavWriter sourceWriter;
     const core::AudioFormat format{48000, 12, core::SampleFormat::Int24};
     const core::Path sourcePath = manager.project().paths().audioFile("source.wav");
-    AW_REQUIRE(sourceWriter.create(storage, sourcePath, format));
+    audio::AcidMetadata sourceAcid;
+    const auto tempoBytes = std::bit_cast<std::array<std::byte, 4>>(110.0F);
+    std::copy(tempoBytes.begin(), tempoBytes.end(), sourceAcid.bytes.begin() + 20);
+    AW_REQUIRE(sourceWriter.create(storage, sourcePath, format, sourceAcid));
     audio::AudioBuffer sourceFrame{12, 1};
     for (core::ChannelCount channel = 0; channel < 12; ++channel)
         sourceFrame.channel(channel)[0] = static_cast<float>(channel + 1) / 12.0F;
@@ -571,6 +575,9 @@ AW_TEST(ExportService, ExportsSixStereoTracksAsOneTwelveChannelWave) {
     AW_CHECK_EQ(metadata.value().format.sampleRate, core::SampleRate{48000});
     AW_CHECK_EQ(metadata.value().format.sampleFormat, core::SampleFormat::Int24);
     AW_CHECK_EQ(metadata.value().frameCount, core::FrameCount{1});
+    AW_REQUIRE(metadata.value().acid.has_value());
+    AW_CHECK_EQ(metadata.value().acid->tempoBpm(), 110.0F);
+    AW_CHECK(metadata.value().acid->bytes == sourceAcid.bytes);
 
     mtp.objects = {{42, hal::kMtpRootHandle, 1, "Six pairs.wav", mtp.uploaded.size(), false, 0}};
     mtp.uploaded.clear();

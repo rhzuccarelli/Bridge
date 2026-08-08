@@ -11,6 +11,7 @@ add_library(aw_ui STATIC
     Screen.cpp
     UiController.cpp
     screens/CopyChannelScreen.cpp
+    screens/DeckScreen.cpp
     screens/ExportScreen.cpp
     screens/HomeScreen.cpp
     screens/ImportScreen.cpp

@@ -79,7 +79,23 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
                     workerQueue_.post(events::JobFinishedEvent{events::JobKind::Scan, scanId,
                         static_cast<bool>(result), result ? core::ErrorCode::Unknown : result.error().code()});
                 });
-            } else browser_.toggleSelection(static_cast<std::size_t>(selection_));
+            } else if (!entry.isSelected) {
+                browser_.toggleSelection(static_cast<std::size_t>(selection_));
+            } else {
+                project::ImportPlan plan;
+                for (const auto& selected : browser_.selectedEntries())
+                    plan.items.push_back({selected.handle, selected.name, selected.sizeBytes,
+                                          core::kInvalidTrackId});
+                const std::uint32_t importId = ++jobId_;
+                core::Status valid = importer_.validate(plan);
+                if (!valid) lastError_ = valid.error().code();
+                else {
+                    transferInProgress_ = true; progressPercent_ = 0;
+                    (void)tasks_.submit([this, importId, plan = std::move(plan)] {
+                        (void)importer_.run(plan, importId);
+                    });
+                }
+            }
             dirty_.set(); return NavigationRequest::none();
         }
         if (button->id == core::ButtonId::Back && browser_.canGoUp()) {
@@ -145,6 +161,9 @@ void ImportScreen::render(display::Painter& painter) {
             std::string_view name = entry.name.size() > 13 ? std::string_view{entry.name}.substr(0, 13)
                                                            : std::string_view{entry.name};
             painter.drawText(12, y, name, font, display::palette::kText);
+            if (index == selection_ && entry.isSelected)
+                painter.drawTextIn({86, y, 40, 12}, "PUSH", font,
+                                   display::palette::kText, display::TextAlign::Right);
         }
     }
     dirty_.clear();

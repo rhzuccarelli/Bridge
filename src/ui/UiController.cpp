@@ -2,6 +2,7 @@
 
 #include "aw/ui/screens/ExportScreen.hpp"
 #include "aw/ui/screens/CopyChannelScreen.hpp"
+#include "aw/ui/screens/DeckScreen.hpp"
 #include "aw/ui/screens/HomeScreen.hpp"
 #include "aw/ui/screens/ImportScreen.hpp"
 #include "aw/ui/screens/PlaybackScreen.hpp"
@@ -77,6 +78,7 @@ core::Status UiController::initialise() {
     navigator_.registerScreen(std::make_unique<ProjectBrowserScreen>(projects_));
     navigator_.registerScreen(std::make_unique<TrackViewScreen>(projects_, engine_));
     navigator_.registerScreen(std::make_unique<CopyChannelScreen>(projects_));
+    navigator_.registerScreen(std::make_unique<DeckScreen>(projects_));
     navigator_.registerScreen(std::make_unique<PlaybackScreen>(projects_, engine_));
     navigator_.registerScreen(std::make_unique<SettingsScreen>());
     if (mtpManager_ && mtpBrowser_ && importer_ && exporter_ && tasks_ && workerQueue_) {
@@ -96,7 +98,29 @@ core::Status UiController::initialise() {
 }
 
 void UiController::onEvent(const events::Event& event) {
-    if (const auto* projectEvent = std::get_if<events::ProjectEvent>(&event)) {
+    events::Event shortPressEvent = event;
+    const events::Event* routedEvent = &event;
+    if (const auto* button = std::get_if<events::ButtonEvent>(&event);
+        button && button->id == core::ButtonId::EncoderPush) {
+        if (button->action == core::ButtonAction::Pressed) {
+            encoderPushWasLong_ = false;
+            return;  // Defer activation until release, after the hold threshold.
+        }
+        if (button->action == core::ButtonAction::LongPressed) {
+            encoderPushWasLong_ = true;
+            navigator_.pop();
+            return;
+        }
+        if (button->action == core::ButtonAction::Repeat) return;
+        if (button->action == core::ButtonAction::Released) {
+            if (encoderPushWasLong_) return;
+            shortPressEvent = events::ButtonEvent{button->id, core::ButtonAction::Pressed,
+                                                   button->timestampMicros};
+            routedEvent = &shortPressEvent;
+        }
+    }
+
+    if (const auto* projectEvent = std::get_if<events::ProjectEvent>(routedEvent)) {
         if (projectEvent->change == events::ProjectChange::Opened ||
             projectEvent->change == events::ProjectChange::Modified ||
             projectEvent->change == events::ProjectChange::UndoStackChanged) {
@@ -108,9 +132,9 @@ void UiController::onEvent(const events::Event& event) {
         return;
     }
 
-    const NavigationRequest request = screen->handleEvent(event);
+    const NavigationRequest request = screen->handleEvent(*routedEvent);
     if (request.intent == NavigationIntent::Ignored) {
-        (void)handleGlobalShortcut(event);
+        (void)handleGlobalShortcut(*routedEvent);
         return;
     }
     navigator_.apply(request);
@@ -118,9 +142,10 @@ void UiController::onEvent(const events::Event& event) {
 
 bool UiController::handleGlobalShortcut(const events::Event& event) {
     const auto* button = std::get_if<events::ButtonEvent>(&event);
-    if (button == nullptr || button->action != core::ButtonAction::Pressed) {
+    if (button == nullptr) {
         return false;
     }
+    if (button->action != core::ButtonAction::Pressed) return false;
 
     switch (button->id) {
         case core::ButtonId::Play:

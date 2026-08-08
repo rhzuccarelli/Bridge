@@ -58,7 +58,8 @@ core::Status patchHeader(hal::FileHandle& file,
                          const core::AudioFormat& format,
                          core::FrameCount framesWritten,
                          std::uint64_t riffSizeOffset,
-                         std::uint64_t dataChunkSizeOffset) {
+                         std::uint64_t dataChunkSizeOffset,
+                         std::uint32_t riffBaseSize) {
     auto resume = file.tell();
     if (!resume) {
         return resume.error();
@@ -66,7 +67,7 @@ core::Status patchHeader(hal::FileHandle& file,
 
     const std::uint64_t dataBytes =
         static_cast<std::uint64_t>(framesWritten) * format.bytesPerFrame();
-    const std::uint32_t riffSize = static_cast<std::uint32_t>(36U + dataBytes);
+    const std::uint32_t riffSize = static_cast<std::uint32_t>(riffBaseSize + dataBytes);
     const std::uint32_t dataSize = static_cast<std::uint32_t>(dataBytes);
 
     if (auto status = writeLittleAt(file, riffSizeOffset, riffSize); !status) {
@@ -90,6 +91,7 @@ struct WavWriter::Impl {
     core::FrameCount framesWritten{0};
     std::uint64_t riffSizeOffset{4};
     std::uint64_t dataChunkSizeOffset{0};
+    std::uint32_t riffBaseSize{36};
     std::vector<std::byte> scratch;
     core::FrameCount nextCheckpoint{48000};
 };
@@ -105,7 +107,8 @@ WavWriter& WavWriter::operator=(WavWriter&&) noexcept = default;
 
 core::Status WavWriter::create(hal::StorageInterface& storage,
                                const core::Path& path,
-                               const core::AudioFormat& format) {
+                               const core::AudioFormat& format,
+                               const std::optional<AcidMetadata>& acid) {
     if (isOpen()) {
         if (auto status = close(); !status) {
             return status;
@@ -122,10 +125,10 @@ core::Status WavWriter::create(hal::StorageInterface& storage,
     }
 
     std::vector<std::byte> header;
-    header.reserve(44);
+    header.reserve(acid ? 76 : 44);
     header.insert(header.end(),
                   {std::byte{'R'}, std::byte{'I'}, std::byte{'F'}, std::byte{'F'}});
-    appendLittle<std::uint32_t>(header, 36U);
+    appendLittle<std::uint32_t>(header, acid ? 68U : 36U);
     header.insert(header.end(),
                   {std::byte{'W'}, std::byte{'A'}, std::byte{'V'}, std::byte{'E'}});
     header.insert(header.end(),
@@ -140,6 +143,12 @@ core::Status WavWriter::create(hal::StorageInterface& storage,
     appendLittle<std::uint16_t>(
         header,
         static_cast<std::uint16_t>(core::bytesPerSample(format.sampleFormat) * 8U));
+    if (acid) {
+        header.insert(header.end(),
+                      {std::byte{'a'}, std::byte{'c'}, std::byte{'i'}, std::byte{'d'}});
+        appendLittle<std::uint32_t>(header, 24U);
+        header.insert(header.end(), acid->bytes.begin(), acid->bytes.end());
+    }
     header.insert(header.end(),
                   {std::byte{'d'}, std::byte{'a'}, std::byte{'t'}, std::byte{'a'}});
     appendLittle<std::uint32_t>(header, 0U);
@@ -156,7 +165,8 @@ core::Status WavWriter::create(hal::StorageInterface& storage,
     impl_->format = format;
     impl_->framesWritten = 0;
     impl_->riffSizeOffset = 4;
-    impl_->dataChunkSizeOffset = 40;
+    impl_->dataChunkSizeOffset = static_cast<std::uint64_t>(header.size() - 4U);
+    impl_->riffBaseSize = static_cast<std::uint32_t>(impl_->dataChunkSizeOffset - 4U);
     impl_->nextCheckpoint = static_cast<core::FrameCount>(format.sampleRate);
     return core::success();
 }
@@ -201,7 +211,8 @@ core::Status WavWriter::write(const AudioBuffer& source) {
     impl_->framesWritten += source.frameCount();
     if (impl_->framesWritten >= impl_->nextCheckpoint) {
         if (auto status = patchHeader(*impl_->file, impl_->format, impl_->framesWritten,
-                                      impl_->riffSizeOffset, impl_->dataChunkSizeOffset);
+                                      impl_->riffSizeOffset, impl_->dataChunkSizeOffset,
+                                      impl_->riffBaseSize);
             !status) {
             return status;
         }
@@ -217,7 +228,8 @@ core::Status WavWriter::close() {
     }
 
     core::Status status = patchHeader(*impl_->file, impl_->format, impl_->framesWritten,
-                                      impl_->riffSizeOffset, impl_->dataChunkSizeOffset);
+                                      impl_->riffSizeOffset, impl_->dataChunkSizeOffset,
+                                      impl_->riffBaseSize);
     impl_.reset();
     return status;
 }

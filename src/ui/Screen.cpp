@@ -11,6 +11,7 @@ std::string_view toString(ScreenId id) noexcept {
         case ScreenId::Import: return "Import";
         case ScreenId::Export: return "Export";
         case ScreenId::CopyChannel: return "CopyChannel";
+        case ScreenId::Decks: return "Decks";
         case ScreenId::Settings: return "Settings";
     }
     return "?";

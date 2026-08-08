@@ -30,6 +30,7 @@ private:
     audio::AudioEngine& engine_;
     DirtyFlag dirty_;
     int selection_{0};  ///< Encoder position over the home actions.
+    int scrollOffset_{0};
 };
 
 }  // namespace aw::ui

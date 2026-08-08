@@ -77,7 +77,20 @@ core::Status ExportService::run(const ExportPlan& plan, std::uint32_t jobId) {
     std::string targetName = exportName(plan, project);
     const core::ChannelCount channels = outputChannels(timeline);
     const core::AudioFormat format{48000, channels, core::SampleFormat::Int24};
-    const std::uint64_t estimatedBytes = 44U + static_cast<std::uint64_t>(totalFrames) *
+    std::optional<audio::AcidMetadata> acid;
+    for (const Track& track : timeline.tracks) {
+        for (const Clip& clip : track.clips) {
+            auto sourceMetadata = audio::WavReader::readMetadata(
+                storage_, project.paths().audioFile(clip.sourceFile));
+            if (sourceMetadata && sourceMetadata.value().acid) {
+                acid = sourceMetadata.value().acid;
+                break;
+            }
+        }
+        if (acid) break;
+    }
+    const std::uint64_t estimatedBytes = (acid ? 76U : 44U) +
+                                          static_cast<std::uint64_t>(totalFrames) *
                                                   format.bytesPerFrame();
 
     auto localFree = storage_.freeSpaceBytes(project.paths().editsDirectory());
@@ -103,7 +116,7 @@ core::Status ExportService::run(const ExportPlan& plan, std::uint32_t jobId) {
     const core::Path renderPath = project.paths().editsDirectory() / targetName;
     (void)storage_.remove(renderPath);
     audio::WavWriter writer;
-    core::Status status = writer.create(storage_, renderPath, format);
+    core::Status status = writer.create(storage_, renderPath, format, acid);
     audio::AudioBuffer output{channels, kRenderBlockFrames};
 
     for (core::FrameIndex blockStart = 0; status && blockStart < totalFrames;

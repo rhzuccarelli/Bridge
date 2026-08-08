@@ -22,6 +22,7 @@ enum class ScreenId : std::uint8_t {
     Import,
     Export,
     CopyChannel,
+    Decks,
     Settings,
 };
 
