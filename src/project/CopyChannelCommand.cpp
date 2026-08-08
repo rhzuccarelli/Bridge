@@ -14,7 +14,10 @@ bool affectsSide(const Clip& clip, core::ChannelCount side) noexcept {
 
 Clip isolateSide(Clip clip, core::ChannelCount side) noexcept {
     const core::ChannelCount routeOffset = side - clip.destinationChannel;
-    clip.sourceChannel += std::min(routeOffset, clip.sourceChannelCount - 1U);
+    const core::ChannelCount lastSourceOffset =
+        static_cast<core::ChannelCount>(clip.sourceChannelCount - 1);
+    clip.sourceChannel = static_cast<core::ChannelCount>(
+        clip.sourceChannel + std::min(routeOffset, lastSourceOffset));
     clip.sourceChannelCount = 1;
     clip.destinationChannel = side;
     clip.destinationChannelCount = 1;
