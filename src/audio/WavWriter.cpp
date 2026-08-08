@@ -111,7 +111,7 @@ core::Status WavWriter::create(hal::StorageInterface& storage,
             return status;
         }
     }
-    if (format.sampleRate == 0 || format.channels == 0 || format.channels > 2 ||
+    if (format.sampleRate == 0 || format.channels == 0 || format.channels > 12 ||
         format.bytesPerFrame() == 0) {
         return core::makeError(core::ErrorCode::InvalidArgument, "invalid WAV format");
     }

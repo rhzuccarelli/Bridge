@@ -1,5 +1,6 @@
 #include "aw/events/EventQueue.hpp"
 #include "aw/mtp/MtpManager.hpp"
+#include "aw/mtp/MtpBrowser.hpp"
 #include "framework/Test.hpp"
 
 #include <vector>
@@ -62,8 +63,10 @@ public:
             hal::MtpStorageInfo{1, "Internal", 128ULL << 30, 64ULL << 30}};
     }
     core::Result<std::vector<hal::MtpObjectInfo>> listObjects(hal::MtpStorageId,
-                                                              hal::MtpObjectHandle) override {
-        return std::vector<hal::MtpObjectInfo>{};
+                                                              hal::MtpObjectHandle parent) override {
+        std::vector<hal::MtpObjectInfo> children;
+        for (const auto& object : objects) if (object.parent == parent) children.push_back(object);
+        return children;
     }
     core::Result<hal::MtpObjectInfo> objectInfo(hal::MtpObjectHandle) override {
         return core::makeError(core::ErrorCode::NotFound, "handle");
@@ -86,6 +89,7 @@ public:
     bool sessionOpen{false};
     bool failOpen{false};
     std::uint32_t lastKey{0};
+    std::vector<hal::MtpObjectInfo> objects;
 };
 
 hal::UsbDeviceInfo makeTp7() {
@@ -198,4 +202,42 @@ AW_TEST(MtpManager, ReportsAFailedSession) {
     AW_REQUIRE(!status.hasValue());
     AW_CHECK_EQ(manager.state(), mtp::ConnectionState::Error);
     AW_CHECK_EQ(manager.lastError().code(), core::ErrorCode::ProtocolError);
+}
+
+AW_TEST(MtpBrowser, ShowsFoldersAndWavsOnlyAndSortsFoldersFirst) {
+    FakeMtp mtp;
+    mtp.objects = {
+        {3, hal::kMtpRootHandle, 1, "z.WAV", 300, false, 0},
+        {4, hal::kMtpRootHandle, 1, "notes.txt", 10, false, 0},
+        {2, hal::kMtpRootHandle, 1, "recordings", 0, true, 0},
+        {5, hal::kMtpRootHandle, 1, "a.wav", 100, false, 0},
+    };
+    mtp::MtpBrowser browser{mtp};
+    AW_REQUIRE(browser.openStorage(1));
+    AW_REQUIRE(browser.entries().size() == std::size_t{3});
+    AW_CHECK(browser.entries()[0].isFolder);
+    AW_CHECK_EQ(browser.entries()[0].name, std::string{"recordings"});
+    AW_CHECK_EQ(browser.entries()[1].name, std::string{"a.wav"});
+    AW_CHECK_EQ(browser.entries()[2].name, std::string{"z.WAV"});
+
+    browser.toggleSelection(1);
+    AW_REQUIRE(browser.selectedEntries().size() == std::size_t{1});
+    AW_CHECK_EQ(browser.selectedEntries()[0].handle, hal::MtpObjectHandle{5});
+}
+
+AW_TEST(MtpBrowser, EntersAndLeavesOneFolderAtATime) {
+    FakeMtp mtp;
+    mtp.objects = {
+        {2, hal::kMtpRootHandle, 1, "recordings", 0, true, 0},
+        {3, 2, 1, "take.wav", 100, false, 0},
+    };
+    mtp::MtpBrowser browser{mtp};
+    AW_REQUIRE(browser.openStorage(1));
+    AW_REQUIRE(browser.enterFolder(2));
+    AW_CHECK(browser.canGoUp());
+    AW_CHECK_EQ(browser.breadcrumbText(), std::string{"/recordings/"});
+    AW_REQUIRE(browser.entries().size() == std::size_t{1});
+    AW_CHECK_EQ(browser.entries()[0].name, std::string{"take.wav"});
+    AW_REQUIRE(browser.goUp());
+    AW_CHECK(!browser.canGoUp());
 }

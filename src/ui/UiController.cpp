@@ -27,7 +27,7 @@ public:
         painter.clear(aw::display::palette::kBackground);
         painter.fillRect({0, 0, 128, 10}, aw::display::palette::kSurface);
         painter.drawText(2, 1, title_, aw::display::smallFont(), aw::display::palette::kText);
-        painter.drawTextIn({0, 20, 128, 10}, "MTP IN PHASE 8", aw::display::smallFont(),
+        painter.drawTextIn({0, 20, 128, 10}, "MTP UNAVAILABLE", aw::display::smallFont(),
                            aw::display::palette::kTextDim, aw::display::TextAlign::Center);
         dirty_ = false;
     }
@@ -45,12 +45,24 @@ UiController::UiController(display::Framebuffer& framebuffer,
                            display::DisplayFlusher& flusher,
                            events::EventBus& bus,
                            project::ProjectManager& projects,
-                           audio::AudioEngine& engine)
+                           audio::AudioEngine& engine,
+                           mtp::MtpManager* mtpManager,
+                           mtp::MtpBrowser* mtpBrowser,
+                           project::ImportService* importer,
+                           project::ExportService* exporter,
+                           TaskRunner* tasks,
+                           events::EventQueue* workerQueue)
     : framebuffer_{framebuffer},
       flusher_{flusher},
       bus_{bus},
       projects_{projects},
       engine_{engine},
+      mtpManager_{mtpManager},
+      mtpBrowser_{mtpBrowser},
+      importer_{importer},
+      exporter_{exporter},
+      tasks_{tasks},
+      workerQueue_{workerQueue},
       painter_{framebuffer} {}
 
 UiController::~UiController() {
@@ -65,8 +77,15 @@ core::Status UiController::initialise() {
     navigator_.registerScreen(std::make_unique<TrackViewScreen>(projects_, engine_));
     navigator_.registerScreen(std::make_unique<PlaybackScreen>(projects_, engine_));
     navigator_.registerScreen(std::make_unique<SettingsScreen>());
-    navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Import, "IMPORT"));
-    navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Export, "EXPORT"));
+    if (mtpManager_ && mtpBrowser_ && importer_ && exporter_ && tasks_ && workerQueue_) {
+        navigator_.registerScreen(std::make_unique<ImportScreen>(
+            *mtpManager_, *mtpBrowser_, *importer_, *tasks_, *workerQueue_));
+        navigator_.registerScreen(std::make_unique<ExportScreen>(
+            *mtpManager_, *mtpBrowser_, projects_, *exporter_, *tasks_, *workerQueue_));
+    } else {
+        navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Import, "IMPORT"));
+        navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Export, "EXPORT"));
+    }
 
     navigator_.reset(ScreenId::Home);
 
@@ -75,6 +94,13 @@ core::Status UiController::initialise() {
 }
 
 void UiController::onEvent(const events::Event& event) {
+    if (const auto* projectEvent = std::get_if<events::ProjectEvent>(&event)) {
+        if (projectEvent->change == events::ProjectChange::Opened ||
+            projectEvent->change == events::ProjectChange::Modified ||
+            projectEvent->change == events::ProjectChange::UndoStackChanged) {
+            (void)engine_.setScene(projects_.buildScene());
+        }
+    }
     Screen* screen = navigator_.current();
     if (screen == nullptr) {
         return;

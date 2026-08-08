@@ -569,8 +569,7 @@ Reflash the microSD card from Step 1. Nothing here is precious.
 
 ## What is next
 
-Phases 1–6 are complete. Phase 7 is accepted after the OLED checklist above passes.
-Phase 8 then connects the already drawn Import and Export entry points to explicit
-MTP browsing and transfers.
+Phases 1–7 are complete. Phase 8 adds explicit TP-7 MTP browsing and transfers; its
+real-device acceptance procedure is in [phase8-tp7-test.md](phase8-tp7-test.md).
 
 See [roadmap.md](roadmap.md).

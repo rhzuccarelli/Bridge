@@ -9,7 +9,7 @@ The bench prototype, and how the software talks to each piece.
 | KY-040 rotary encoder with push switch | GPIO | `GpioEncoder` + `GpioButtons` *(Phase 6)* |
 | microSD | — | `PosixStorage` |
 | USB audio interface or codec | USB / I²S | `AlsaAudioOutput`: 48 kHz, S24_3LE, stereo |
-| Teenage Engineering TP-7 | USB (MTP) | `LibUsbHost` + `LibMtpDevice` *(Phase 8)* |
+| Teenage Engineering TP-7 | USB (MTP) | `LibUsbHost` + `LibMtpDevice` |
 | *(alternative)* 3.5" HDMI LCD, 480×320, XPT2046 touch | HDMI + SPI touch | `FramebufferDisplay` + `EvdevTouch` |
 
 > **Two display options, one reason to prefer the OLED on the prototype.** The

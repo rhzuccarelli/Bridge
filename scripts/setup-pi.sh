@@ -56,6 +56,13 @@ sudo apt-get install -y --no-install-recommends \
     libmtp-dev
 ok "alsa, gpiod, libusb, libmtp"
 
+say "Installing the TP-7 MTP permission rule"
+sudo install -m 0644 scripts/99-audio-workstation-tp7.rules \
+    /etc/udev/rules.d/99-audio-workstation-tp7.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=usb
+ok "TP-7 MTP access for the plugdev group"
+
 say "Installing diagnostic tools"
 sudo apt-get install -y --no-install-recommends \
     gpiod \

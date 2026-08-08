@@ -66,6 +66,8 @@ elseif(AW_PLATFORM STREQUAL "rpi")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
     pkg_check_modules(GPIOD REQUIRED IMPORTED_TARGET libgpiod)
+    pkg_check_modules(USB REQUIRED IMPORTED_TARGET libusb-1.0)
+    pkg_check_modules(MTP REQUIRED IMPORTED_TARGET libmtp)
 
     add_library(aw_platform STATIC
         rpi/AlsaAudioOutput.cpp
@@ -75,7 +77,8 @@ elseif(AW_PLATFORM STREQUAL "rpi")
         rpi/RpiPlatform.cpp
         rpi/SpiDisplay.cpp)
     target_compile_definitions(aw_platform PUBLIC AW_PLATFORM_RPI=1)
-    target_link_libraries(aw_platform PRIVATE PkgConfig::ALSA PkgConfig::GPIOD)
+    target_link_libraries(aw_platform PRIVATE PkgConfig::ALSA PkgConfig::GPIOD
+                                              PkgConfig::USB PkgConfig::MTP)
 
     add_executable(aw-alsa-test rpi/alsa_test_main.cpp rpi/AlsaAudioOutput.cpp)
     target_include_directories(aw-alsa-test PRIVATE ${AW_INCLUDE_DIR})
@@ -86,18 +89,6 @@ elseif(AW_PLATFORM STREQUAL "rpi")
     target_include_directories(aw-gpio-test PRIVATE ${AW_INCLUDE_DIR})
     target_link_libraries(aw-gpio-test PRIVATE aw::core aw::hal aw::compiler_options
                                                    PkgConfig::GPIOD Threads::Threads)
-
-    # ALSA is required for the Pi build from Phase 5 onward. Later-phase
-    # dependencies remain optional while their backends are still scaffolds.
-    if(PkgConfig_FOUND)
-        pkg_check_modules(USB QUIET libusb-1.0)
-        pkg_check_modules(MTP QUIET libmtp)
-        foreach(dep USB MTP)
-            if(NOT ${dep}_FOUND)
-                message(STATUS "  rpi backend: ${dep} not found (stubs remain in use)")
-            endif()
-        endforeach()
-    endif()
 
 endif()
 

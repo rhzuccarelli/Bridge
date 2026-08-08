@@ -27,6 +27,8 @@ enum class ExportConflictPolicy : std::uint8_t {
 };
 
 struct ExportPlan {
+    /// One active deck is exported as one TP-7 WAV containing 1-6 stereo pairs.
+    std::string targetName;
     std::vector<ExportItem> items;
     hal::MtpStorageId targetStorage{0};
     hal::MtpObjectHandle targetFolder{hal::kMtpRootHandle};
@@ -35,7 +37,7 @@ struct ExportPlan {
 
 /// Renders tracks and writes them back to the TP-7 over MTP.
 ///
-/// Phase 8 implements this; the render half depends on Phase 4.  A track with
+/// The render half depends on Phase 4. A track with
 /// edits is not a file on disk - it is a clip list - so export is
 /// render-to-`edits/` followed by an MTP upload of the rendered file.  Doing it
 /// in two steps rather than streaming the render straight into MTP is

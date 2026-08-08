@@ -33,6 +33,7 @@ public:
     [[nodiscard]] DeckId activeDeckId() const noexcept { return activeDeck().id; }
     [[nodiscard]] core::Status setActiveDeck(DeckId id) noexcept;
     [[nodiscard]] Deck& addDeck(std::string name);
+    [[nodiscard]] core::Status removeDeck(DeckId id) noexcept;
 
     /// Compatibility aliases for editing commands: a timeline without an
     /// explicit deck always means the one active for playback.

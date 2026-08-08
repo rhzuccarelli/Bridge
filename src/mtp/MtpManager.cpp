@@ -2,9 +2,6 @@
 
 #include "aw/core/Logger.hpp"
 
-// Phase 8 completes this; the hotplug bookkeeping is real already because it is
-// pure state and the UI needs a device indicator from Phase 7 onwards.
-
 namespace aw::mtp {
 namespace {
 constexpr std::string_view kModule = "mtp";

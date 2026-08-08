@@ -5,6 +5,7 @@
 #include "aw/project/ImportService.hpp"
 #include "aw/ui/DirtyFlag.hpp"
 #include "aw/ui/Screen.hpp"
+#include "aw/ui/TaskRunner.hpp"
 
 namespace aw::ui {
 
@@ -21,7 +22,9 @@ class ImportScreen final : public Screen {
 public:
     ImportScreen(mtp::MtpManager& manager,
                  mtp::MtpBrowser& browser,
-                 project::ImportService& importer) noexcept;
+                 project::ImportService& importer,
+                 TaskRunner& tasks,
+                 events::EventQueue& workerQueue) noexcept;
 
     [[nodiscard]] ScreenId id() const noexcept override { return ScreenId::Import; }
     [[nodiscard]] std::string_view title() const noexcept override { return "Import"; }
@@ -35,11 +38,16 @@ private:
     mtp::MtpManager& manager_;
     mtp::MtpBrowser& browser_;
     project::ImportService& importer_;
+    TaskRunner& tasks_;
+    events::EventQueue& workerQueue_;
     DirtyFlag dirty_;
     int selection_{0};
     int scrollOffset_{0};
     bool transferInProgress_{false};
     std::uint8_t progressPercent_{0};
+    std::uint32_t jobId_{0};
+    bool scanning_{false};
+    core::ErrorCode lastError_{core::ErrorCode::Unknown};
 };
 
 }  // namespace aw::ui

@@ -533,11 +533,11 @@ AW_TEST(WavWriter, WritesAPlayableWaveThatRoundTripsThroughReader) {
     AW_CHECK(nearlyEqual(readBack.channel(1)[2], -0.75F));
 }
 
-AW_TEST(WavWriter, RejectsMoreThanTwoChannels) {
+AW_TEST(WavWriter, RejectsMoreThanTwelveChannels) {
     awtest::MemoryStorage storage;
     audio::WavWriter writer;
-    const core::AudioFormat format{48000, 3, core::SampleFormat::Int24};
-    const auto status = writer.create(storage, "/projects/Take/audio/Three.wav", format);
+    const core::AudioFormat format{48000, 13, core::SampleFormat::Int24};
+    const auto status = writer.create(storage, "/projects/Take/audio/Thirteen.wav", format);
     AW_REQUIRE(!status.hasValue());
     AW_CHECK_EQ(status.error().code(), core::ErrorCode::InvalidArgument);
 }

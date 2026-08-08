@@ -4,12 +4,72 @@
 #include "aw/project/ProjectMetadata.hpp"
 #include "aw/project/Timeline.hpp"
 #include "aw/project/UndoStack.hpp"
+#include "aw/project/ImportService.hpp"
+#include "aw/project/ExportService.hpp"
+#include "aw/audio/WavWriter.hpp"
 #include "framework/Test.hpp"
 #include "support/MemoryStorage.hpp"
+
+#include <array>
+#include <algorithm>
 
 using namespace aw;
 
 namespace {
+
+class TransferMtp final : public hal::MTPInterface {
+public:
+    core::Status openSession(std::uint32_t) override { open = true; return core::success(); }
+    void closeSession() noexcept override { open = false; }
+    bool hasSession() const noexcept override { return open; }
+    core::Result<hal::MtpDeviceInfo> deviceInfo() const override { return hal::MtpDeviceInfo{}; }
+    core::Result<std::vector<hal::MtpStorageInfo>> storages() const override {
+        return std::vector<hal::MtpStorageInfo>{{1, "TP-7", 1ULL << 30, 1ULL << 30}};
+    }
+    core::Result<std::vector<hal::MtpObjectInfo>> listObjects(hal::MtpStorageId,
+                                                              hal::MtpObjectHandle) override {
+        return objects;
+    }
+    core::Result<hal::MtpObjectInfo> objectInfo(hal::MtpObjectHandle) override {
+        return core::makeError(core::ErrorCode::NotFound, "object");
+    }
+    core::Status readObject(hal::MtpObjectHandle, const hal::MtpWriteSink& sink,
+                            const hal::MtpProgressCallback& progress) override {
+        if (!sink(bytes)) return core::makeError(core::ErrorCode::Cancelled, "sink");
+        if (!progress(bytes.size(), bytes.size()))
+            return core::makeError(core::ErrorCode::Cancelled, "progress");
+        return core::success();
+    }
+    core::Result<hal::MtpObjectHandle> writeObject(hal::MtpStorageId, hal::MtpObjectHandle,
+        const std::string& name, std::uint64_t size, const hal::MtpReadSource& source,
+        const hal::MtpProgressCallback& progress) override {
+        uploadedName = name;
+        uploaded.clear();
+        std::array<std::byte, 64> buffer{};
+        while (uploaded.size() < size) {
+            const std::size_t count = source(buffer);
+            if (count == 0) break;
+            uploaded.insert(uploaded.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(count));
+            if (!progress(uploaded.size(), size))
+                return core::makeError(core::ErrorCode::Cancelled, "upload");
+        }
+        return uploaded.size() == size ? core::Result<hal::MtpObjectHandle>{hal::MtpObjectHandle{9}}
+                                       : core::Result<hal::MtpObjectHandle>{core::makeError(core::ErrorCode::Corrupt, "size")};
+    }
+    core::Status deleteObject(hal::MtpObjectHandle handle) override {
+        deleted = handle;
+        objects.erase(std::remove_if(objects.begin(), objects.end(),
+            [handle](const hal::MtpObjectInfo& object) { return object.handle == handle; }), objects.end());
+        return core::success();
+    }
+
+    bool open{true};
+    std::vector<std::byte> bytes;
+    std::vector<std::byte> uploaded;
+    std::string uploadedName;
+    std::vector<hal::MtpObjectInfo> objects;
+    hal::MtpObjectHandle deleted{0};
+};
 
 /// A command that renames a track.  Small enough to be obviously correct, which
 /// is what makes it useful for testing the stack rather than a command.
@@ -362,4 +422,102 @@ AW_TEST(ProjectManager, BuildSceneIncludesOnlyTheActiveDeck) {
     AW_CHECK_EQ(scene.tracks.size(), std::size_t{1});
     AW_CHECK_EQ(scene.tracks[0].audioFile,
                 core::Path{"/projects/Deck selection/audio/active.wav"});
+}
+
+AW_TEST(ImportService, ImportsOneTwelveChannelWaveAsSixStereoPairsInOneDeck) {
+    awtest::MemoryStorage sourceStorage;
+    audio::WavWriter sourceWriter;
+    const core::AudioFormat format{48000, 12, core::SampleFormat::Int24};
+    AW_REQUIRE(sourceWriter.create(sourceStorage, "/source.wav", format));
+    audio::AudioBuffer frame{12, 1};
+    for (core::ChannelCount channel = 0; channel < 12; ++channel)
+        frame.channel(channel)[0] = static_cast<float>(channel) / 12.0F;
+    AW_REQUIRE(sourceWriter.write(frame));
+    AW_REQUIRE(sourceWriter.close());
+
+    TransferMtp mtp;
+    const auto* source = sourceStorage.fileContents("/source.wav");
+    AW_REQUIRE(source != nullptr);
+    mtp.bytes = *source;
+
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+    AW_REQUIRE(manager.createProject("Import test"));
+    project::ImportService importer{storage, mtp, manager, queue};
+    project::ImportPlan plan;
+    plan.items.push_back({76, "CAGE 2M2.wav", mtp.bytes.size(), core::kInvalidTrackId});
+    AW_REQUIRE(importer.run(plan, 7));
+
+    AW_CHECK_EQ(manager.project().decks().size(), std::size_t{2});
+    const project::Deck& deck = manager.project().activeDeck();
+    AW_CHECK_EQ(deck.name, std::string{"CAGE 2M2"});
+    AW_REQUIRE(deck.timeline.tracks.size() == project::kTrackCount);
+    for (std::size_t index = 0; index < project::kTrackCount; ++index) {
+        AW_REQUIRE(deck.timeline.tracks[index].clips.size() == std::size_t{1});
+        const project::Clip& clip = deck.timeline.tracks[index].clips[0];
+        AW_CHECK_EQ(clip.sourceChannel, static_cast<core::ChannelCount>(index * 2));
+        AW_CHECK_EQ(clip.sourceChannelCount, core::ChannelCount{2});
+    }
+    AW_REQUIRE(manager.undo());
+    AW_CHECK_EQ(manager.project().decks().size(), std::size_t{1});
+}
+
+AW_TEST(ExportService, ExportsSixStereoTracksAsOneTwelveChannelWave) {
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+    AW_REQUIRE(manager.createProject("Six pairs"));
+
+    audio::WavWriter sourceWriter;
+    const core::AudioFormat format{48000, 12, core::SampleFormat::Int24};
+    const core::Path sourcePath = manager.project().paths().audioFile("source.wav");
+    AW_REQUIRE(sourceWriter.create(storage, sourcePath, format));
+    audio::AudioBuffer sourceFrame{12, 1};
+    for (core::ChannelCount channel = 0; channel < 12; ++channel)
+        sourceFrame.channel(channel)[0] = static_cast<float>(channel + 1) / 12.0F;
+    AW_REQUIRE(sourceWriter.write(sourceFrame));
+    AW_REQUIRE(sourceWriter.close());
+
+    project::Timeline& timeline = const_cast<project::Timeline&>(manager.project().timeline());
+    for (std::size_t index = 0; index < project::kTrackCount; ++index) {
+        project::Clip clip;
+        clip.id = static_cast<core::ClipId>(index + 1);
+        clip.sourceFile = "source.wav";
+        clip.sourceRange = {0, 1};
+        clip.sourceChannel = static_cast<core::ChannelCount>(index * 2);
+        clip.sourceChannelCount = 2;
+        timeline.tracks[index].clips.push_back(clip);
+    }
+
+    TransferMtp mtp;
+    project::ExportService exporter{storage, mtp, manager, queue};
+    project::ExportPlan plan;
+    plan.targetName = "Six pairs.wav";
+    plan.targetStorage = 1;
+    AW_REQUIRE(exporter.run(plan, 11));
+    AW_CHECK_EQ(mtp.uploadedName, std::string{"Six pairs.wav"});
+
+    awtest::MemoryStorage verification;
+    verification.addFile("/export.wav", mtp.uploaded);
+    auto metadata = audio::WavReader::readMetadata(verification, "/export.wav");
+    AW_REQUIRE(metadata.hasValue());
+    AW_CHECK_EQ(metadata.value().format.channels, core::ChannelCount{12});
+    AW_CHECK_EQ(metadata.value().format.sampleRate, core::SampleRate{48000});
+    AW_CHECK_EQ(metadata.value().format.sampleFormat, core::SampleFormat::Int24);
+    AW_CHECK_EQ(metadata.value().frameCount, core::FrameCount{1});
+
+    mtp.objects = {{42, hal::kMtpRootHandle, 1, "Six pairs.wav", mtp.uploaded.size(), false, 0}};
+    mtp.uploaded.clear();
+    plan.conflictPolicy = project::ExportConflictPolicy::Fail;
+    const auto refused = exporter.run(plan, 12);
+    AW_REQUIRE(!refused.hasValue());
+    AW_CHECK_EQ(refused.error().code(), core::ErrorCode::AlreadyExists);
+    AW_CHECK_EQ(mtp.deleted, hal::MtpObjectHandle{0});
+    AW_CHECK(mtp.uploaded.empty());
+
+    plan.conflictPolicy = project::ExportConflictPolicy::Overwrite;
+    AW_REQUIRE(exporter.run(plan, 13));
+    AW_CHECK_EQ(mtp.deleted, hal::MtpObjectHandle{42});
+    AW_CHECK(!mtp.uploaded.empty());
 }

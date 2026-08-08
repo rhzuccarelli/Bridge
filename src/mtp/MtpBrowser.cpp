@@ -1,9 +1,8 @@
 #include "aw/mtp/MtpBrowser.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <iterator>
-
-// Phase 8 implements navigation against a real device.
 
 namespace aw::mtp {
 
@@ -39,9 +38,30 @@ core::Status MtpBrowser::goUp() {
 }
 
 core::Status MtpBrowser::refresh() {
-    (void)mtp_;
-    entries_.clear();
-    return core::notImplemented("MtpBrowser::refresh (Phase 8)");
+    auto objects = mtp_.listObjects(storage_, current_);
+    if (!objects) return objects.error();
+
+    std::vector<BrowserEntry> next;
+    next.reserve(objects.value().size());
+    for (const hal::MtpObjectInfo& object : objects.value()) {
+        std::string extension;
+        const auto dot = object.name.find_last_of('.');
+        if (dot != std::string::npos) {
+            extension = object.name.substr(dot);
+            std::transform(extension.begin(), extension.end(), extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        }
+        const bool isWav = extension == ".wav";
+        if (!object.isFolder && !isWav) continue;
+        next.push_back(BrowserEntry{object.handle, object.name, object.sizeBytes,
+                                    object.isFolder, isWav, false});
+    }
+    std::sort(next.begin(), next.end(), [](const BrowserEntry& left, const BrowserEntry& right) {
+        if (left.isFolder != right.isFolder) return left.isFolder > right.isFolder;
+        return left.name < right.name;
+    });
+    entries_ = std::move(next);
+    return core::success();
 }
 
 std::string MtpBrowser::breadcrumbText() const {

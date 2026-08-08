@@ -7,8 +7,7 @@
 - Ninja (optional, but assumed below)
 
 The portable build has no third-party dependencies. The Raspberry Pi backend requires
-`libasound2-dev`; later GPIO/MTP phases use `libgpiod-dev`, `libusb-1.0-0-dev` and
-`libmtp-dev`.
+`libasound2-dev`, `libgpiod-dev`, `libusb-1.0-0-dev` and `libmtp-dev`.
 
 ## Development build (any machine)
 
