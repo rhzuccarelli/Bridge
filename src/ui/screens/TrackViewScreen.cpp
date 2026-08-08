@@ -23,7 +23,7 @@ NavigationRequest TrackViewScreen::handleEvent(const events::Event& event) {
     if (const auto* button = std::get_if<events::ButtonEvent>(&event)) {
         if (button->id == core::ButtonId::EncoderPush) {
             return button->action == core::ButtonAction::Pressed
-                       ? NavigationRequest::none() : NavigationRequest::ignored();
+                       ? NavigationRequest::back() : NavigationRequest::ignored();
         }
         if (button->action != core::ButtonAction::Pressed) {
             return NavigationRequest::ignored();

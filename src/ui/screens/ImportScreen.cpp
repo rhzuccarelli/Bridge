@@ -141,7 +141,10 @@ void ImportScreen::render(display::Painter& painter) {
         painter.drawTextIn({0, 48, 128, 12}, "STOP:CANCEL", font,
                            display::palette::kTextDim, display::TextAlign::Center);
     } else if (lastError_ != core::ErrorCode::Unknown) {
-        painter.drawTextIn({0, 20, 128, 12}, core::toString(lastError_), font,
+        const std::string_view message = lastError_ == core::ErrorCode::InvalidState
+                                             ? std::string_view{"OPEN PROJECT FIRST"}
+                                             : core::toString(lastError_);
+        painter.drawTextIn({0, 20, 128, 12}, message, font,
                            display::palette::kText, display::TextAlign::Center);
         painter.drawTextIn({0, 38, 128, 12}, "BACK / RETRY", font,
                            display::palette::kTextDim, display::TextAlign::Center);
