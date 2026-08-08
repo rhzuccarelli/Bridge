@@ -38,8 +38,11 @@ public:
     core::Status readObject(hal::MtpObjectHandle, const hal::MtpWriteSink& sink,
                             const hal::MtpProgressCallback& progress) override {
         if (!sink(bytes)) return core::makeError(core::ErrorCode::Cancelled, "sink");
-        if (!progress(bytes.size(), bytes.size()))
-            return core::makeError(core::ErrorCode::Cancelled, "progress");
+        for (std::size_t step = 1; step <= progressSteps; ++step) {
+            const std::uint64_t done = bytes.size() * step / progressSteps;
+            if (!progress(done, bytes.size()))
+                return core::makeError(core::ErrorCode::Cancelled, "progress");
+        }
         return core::success();
     }
     core::Result<hal::MtpObjectHandle> writeObject(hal::MtpStorageId, hal::MtpObjectHandle,
@@ -71,6 +74,7 @@ public:
     std::string uploadedName;
     std::vector<hal::MtpObjectInfo> objects;
     hal::MtpObjectHandle deleted{0};
+    std::size_t progressSteps{1};
 };
 
 /// A command that renames a track.  Small enough to be obviously correct, which
@@ -502,6 +506,7 @@ AW_TEST(ImportService, ImportsOneTwelveChannelWaveAsSixStereoPairsInOneDeck) {
     AW_REQUIRE(sourceWriter.close());
 
     TransferMtp mtp;
+    mtp.progressSteps = 10'000;
     const auto* source = sourceStorage.fileContents("/source.wav");
     AW_REQUIRE(source != nullptr);
     mtp.bytes = *source;
@@ -514,6 +519,7 @@ AW_TEST(ImportService, ImportsOneTwelveChannelWaveAsSixStereoPairsInOneDeck) {
     project::ImportPlan plan;
     plan.items.push_back({76, "CAGE 2M2.wav", mtp.bytes.size(), core::kInvalidTrackId});
     AW_REQUIRE(importer.run(plan, 7));
+    AW_CHECK_EQ(queue.droppedCount(), std::size_t{0});
 
     AW_CHECK_EQ(manager.project().decks().size(), std::size_t{2});
     const project::Deck& deck = manager.project().activeDeck();
@@ -527,6 +533,36 @@ AW_TEST(ImportService, ImportsOneTwelveChannelWaveAsSixStereoPairsInOneDeck) {
     }
     AW_REQUIRE(manager.undo());
     AW_CHECK_EQ(manager.project().decks().size(), std::size_t{1});
+}
+
+AW_TEST(ImportService, ImportsStereoWaveAsOnePopulatedTrack) {
+    awtest::MemoryStorage sourceStorage;
+    audio::WavWriter writer;
+    const core::AudioFormat format{48000, 2, core::SampleFormat::Int24};
+    AW_REQUIRE(writer.create(sourceStorage, "/Q.WAV", format));
+    audio::AudioBuffer frame{2, 1};
+    AW_REQUIRE(writer.write(frame));
+    AW_REQUIRE(writer.close());
+
+    TransferMtp mtp;
+    const auto* source = sourceStorage.fileContents("/Q.WAV");
+    AW_REQUIRE(source != nullptr);
+    mtp.bytes = *source;
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+    AW_REQUIRE(manager.createProject("Stereo import"));
+    project::ImportService importer{storage, mtp, manager, queue};
+    project::ImportPlan plan;
+    plan.items.push_back({76, "Q.WAV", mtp.bytes.size(), core::kInvalidTrackId});
+    AW_REQUIRE(importer.run(plan, 8));
+
+    const auto& tracks = manager.project().activeDeck().timeline.tracks;
+    AW_REQUIRE(tracks.size() == project::kTrackCount);
+    AW_CHECK_EQ(tracks[0].clips.size(), std::size_t{1});
+    AW_CHECK_EQ(tracks[0].clips[0].sourceChannelCount, core::ChannelCount{2});
+    for (std::size_t index = 1; index < tracks.size(); ++index)
+        AW_CHECK(tracks[index].clips.empty());
 }
 
 AW_TEST(ExportService, ExportsSixStereoTracksAsOneTwelveChannelWave) {
