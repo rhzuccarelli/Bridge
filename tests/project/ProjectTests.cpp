@@ -39,7 +39,9 @@ public:
                             const hal::MtpProgressCallback& progress) override {
         if (!sink(bytes)) return core::makeError(core::ErrorCode::Cancelled, "sink");
         for (std::size_t step = 1; step <= progressSteps; ++step) {
-            const std::uint64_t done = bytes.size() * step / progressSteps;
+            const std::uint64_t done = progressOscillates
+                                           ? (step % 2 == 0 ? bytes.size() : 0)
+                                           : bytes.size() * step / progressSteps;
             if (!progress(done, bytes.size()))
                 return core::makeError(core::ErrorCode::Cancelled, "progress");
         }
@@ -75,6 +77,7 @@ public:
     std::vector<hal::MtpObjectInfo> objects;
     hal::MtpObjectHandle deleted{0};
     std::size_t progressSteps{1};
+    bool progressOscillates{false};
 };
 
 /// A command that renames a track.  Small enough to be obviously correct, which
@@ -507,6 +510,7 @@ AW_TEST(ImportService, ImportsOneTwelveChannelWaveAsSixStereoPairsInOneDeck) {
 
     TransferMtp mtp;
     mtp.progressSteps = 10'000;
+    mtp.progressOscillates = true;
     const auto* source = sourceStorage.fileContents("/source.wav");
     AW_REQUIRE(source != nullptr);
     mtp.bytes = *source;

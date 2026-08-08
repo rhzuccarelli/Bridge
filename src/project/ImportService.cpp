@@ -121,7 +121,7 @@ core::Status ImportService::run(const ImportPlan& plan, std::uint32_t jobId) {
     std::vector<core::Path> completedFiles;
     const auto& paths = projects_.project().paths();
     std::uint64_t completedBytes = 0;
-    std::uint8_t lastPostedPercent = 255;
+    std::uint8_t lastPostedPercent = 0;
     auto fail = [&](core::Status failure) {
         for (const core::Path& completed : completedFiles) (void)storage_.remove(completed);
         postFinished(eventQueue_, jobId, failure);
@@ -165,7 +165,10 @@ core::Status ImportService::run(const ImportPlan& plan, std::uint32_t jobId) {
             const std::uint64_t overall = completedBytes + done;
             const std::uint8_t percent = static_cast<std::uint8_t>(
                 plan.totalBytes() == 0 ? 0 : std::min<std::uint64_t>(100, overall * 100 / plan.totalBytes()));
-            if (percent != lastPostedPercent) {
+            // Some MTP devices report packet-level progress that can briefly
+            // move backwards. Only visible forward progress belongs in the UI
+            // queue; otherwise oscillation can crowd out JobFinishedEvent.
+            if (percent > lastPostedPercent) {
                 lastPostedPercent = percent;
                 eventQueue_.post(events::JobProgressEvent{
                     events::JobKind::Import, jobId, static_cast<std::uint32_t>(itemIndex),
