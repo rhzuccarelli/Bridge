@@ -138,11 +138,19 @@ core::Status Application::run() {
     }
 
     std::uint64_t previousMicros = platform_.clock->nowMicros();
+    std::uint32_t audioRefreshMillis = 0;
 
     while (!stopRequested_.load(std::memory_order_acquire)) {
         const std::uint64_t nowMicros = platform_.clock->nowMicros();
         const auto elapsedMillis = static_cast<std::uint32_t>((nowMicros - previousMicros) / 1000);
         previousMicros = nowMicros;
+        audioRefreshMillis += elapsedMillis;
+
+        if (audioRefreshMillis >= 2000) {
+            audioRefreshMillis = 0;
+            if (auto status = engine_->refreshOutput(); !status)
+                core::log::warning(kModule, "audio refresh failed: " + status.error().describe());
+        }
 
         bus_.dispatchPending();
 

@@ -90,6 +90,10 @@ The mandatory TP-7 monitor path is supported as a backend-only exception: its US
 descriptor exposes asynchronous `S24_3LE`, 96 kHz, six-channel playback. The Pi keeps
 the engine callback at 48 kHz stereo, upsamples exactly 2x, routes it to FL/FR, and
 writes silence to FC/LFE/RL/RR. Stored and MTP-exported audio is never resampled.
+If Bridge starts while the TP-7 is in MTP mode, silent timing keeps the transport
+alive and the backend retries the named `hw:TP7,0` interface every two seconds. It
+switches to real monitoring when the TP-7 returns in USB-audio mode, without an app
+restart.
 
 ## Phase 6 — GPIO backend
 
@@ -119,6 +123,11 @@ were initially explicit Phase 8 boundaries and are now connected to the MTP work
 Track View covers the six synchronized stereo lanes with direct Track 1–6 controls.
 There is no bank state. The 128×64 prototype shows four readable rows at once and
 automatically reveals tracks 5–6 when either is selected.
+
+The accepted one-encoder interface is action-first: Transport, Tracks, Copy Channel,
+Change Deck, Import TP-7, Export TP-7 and Projects. Transport again shows song
+position and waveform; turning scrubs and pushing toggles Play/Stop. Long push is a
+global Back action and redraws the revealed screen immediately.
 
 ## Phase 8 — MTP
 

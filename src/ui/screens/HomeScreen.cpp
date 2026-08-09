@@ -37,12 +37,7 @@ NavigationRequest HomeScreen::handleEvent(const events::Event& event) {
         if (button->id == core::ButtonId::EncoderPush) {
             switch (selection_) {
                 case 0:
-                    if (engine_.transport().state() == events::TransportState::Playing)
-                        engine_.transport().requestStop();
-                    else
-                        engine_.transport().requestPlay();
-                    dirty_.set();
-                    return NavigationRequest::none();
+                    return NavigationRequest::push(ScreenId::Playback);
                 case 1: return NavigationRequest::push(ScreenId::TrackView);
                 case 2: return NavigationRequest::push(ScreenId::CopyChannel);
                 case 3: return NavigationRequest::push(ScreenId::Decks);
@@ -74,7 +69,7 @@ void HomeScreen::render(display::Painter& painter) {
     painter.drawTextIn({90, 0, 36, 12}, state, font, display::palette::kText,
                        display::TextAlign::Right);
     constexpr std::array<std::string_view, 7> actions{
-        "PLAY / STOP", "TRACKS", "COPY CHANNEL", "CHANGE DECK",
+        "TRANSPORT", "TRACKS", "COPY CHANNEL", "CHANGE DECK",
         "IMPORT TP-7", "EXPORT TP-7", "PROJECTS"};
     for (int row = 0; row < 4; ++row) {
         const int index = scrollOffset_ + row;

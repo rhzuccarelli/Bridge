@@ -74,6 +74,7 @@ public:
     [[nodiscard]] core::Status start(core::FrameCount bufferFrames);
     void stop() noexcept;
     [[nodiscard]] bool isRunning() const noexcept;
+    [[nodiscard]] core::Status refreshOutput() { return output_.refresh(); }
 
     /// Replaces what is playing.  Safe to call while running; takes effect at
     /// the next block boundary.  Blocking (it opens files), so control thread only.

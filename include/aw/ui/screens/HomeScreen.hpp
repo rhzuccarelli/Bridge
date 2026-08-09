@@ -20,6 +20,7 @@ public:
     [[nodiscard]] ScreenId id() const noexcept override { return ScreenId::Home; }
     [[nodiscard]] std::string_view title() const noexcept override;
 
+    void onEnter() override { dirty_.set(); }
     [[nodiscard]] NavigationRequest handleEvent(const events::Event& event) override;
     void update(std::uint32_t elapsedMillis) override;
     [[nodiscard]] bool isDirty() const noexcept override { return dirty_.isSet(); }

@@ -22,6 +22,16 @@ NavigationRequest PlaybackScreen::handleEvent(const events::Event& event) {
         dirty_.set();
         return NavigationRequest::none();
     }
+    if (const auto* button = std::get_if<events::ButtonEvent>(&event);
+        button && button->id == core::ButtonId::EncoderPush &&
+        button->action == core::ButtonAction::Pressed) {
+        if (engine_.transport().state() == events::TransportState::Playing)
+            engine_.transport().requestStop();
+        else
+            engine_.transport().requestPlay();
+        dirty_.set();
+        return NavigationRequest::none();
+    }
     (void)projects_;
     return NavigationRequest::ignored();
 }
@@ -36,7 +46,11 @@ void PlaybackScreen::render(display::Painter& painter) {
     const auto& small = display::smallFont();
     const auto& large = display::largeFont();
     painter.fillRect({0, 0, 128, 12}, display::palette::kSurface);
-    painter.drawText(2, 0, "PLAYBACK", small, display::palette::kText);
+    painter.drawText(2, 0, "TRANSPORT", small, display::palette::kText);
+    const char* state = engine_.transport().state() == events::TransportState::Playing
+                            ? "PLAY" : "STOP";
+    painter.drawTextIn({90, 0, 36, 12}, state, small, display::palette::kText,
+                       display::TextAlign::Right);
     const auto millis = core::framesToMillis(engine_.transport().position(), 48000);
     char time[12];
     std::snprintf(time, sizeof(time), "%02lld:%02lld.%03lld",
@@ -57,7 +71,8 @@ void PlaybackScreen::render(display::Painter& painter) {
             engine_.transport().position(), 0, length) * 123 / length);
         painter.drawVLine(x, 31, 20, display::palette::kAccent);
     }
-    painter.drawText(2, 52, "TURN:SCRUB", small, display::palette::kTextDim);
+    painter.drawTextIn({0, 52, 128, 12}, "PUSH PLAY / STOP", small,
+                       display::palette::kTextDim, display::TextAlign::Center);
     lastDrawnPosition_ = engine_.transport().position();
     dirty_.clear();
 }

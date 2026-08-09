@@ -55,6 +55,10 @@ public:
                               AudioRenderCallback& callback) = 0;
 
     virtual core::Status start() = 0;
+
+    /// Control-thread maintenance hook. Backends that can disappear and return
+    /// use this to reconnect without restarting the application.
+    virtual core::Status refresh() { return core::success(); }
     virtual void stop() noexcept = 0;
     virtual void close() noexcept = 0;
 

@@ -457,6 +457,7 @@ public:
     core::FrameCount latencyFrames() const noexcept override { return frames_ * 2; }
 
     int openCalls{0};
+    void setOpens(bool opens) noexcept { opens_ = opens; }
 
 private:
     bool opens_{false};
@@ -493,6 +494,24 @@ AW_TEST(FallbackAudioOutput, UsesSilentBackendWhenPrimaryCannotOpen) {
     AW_CHECK_EQ(fallbackPtr->openCalls, 1);
     AW_REQUIRE(output.start());
     AW_CHECK(output.isRunning());
+}
+
+AW_TEST(FallbackAudioOutput, ReconnectsPrimaryAfterStartingSilent) {
+    auto primary = std::make_unique<FakeAudioBackend>(false);
+    auto fallback = std::make_unique<FakeAudioBackend>(true);
+    FakeAudioBackend* primaryPtr = primary.get();
+    FallbackAudioOutput output{std::move(primary), std::move(fallback)};
+    TestRenderCallback callback;
+
+    AW_REQUIRE(output.open(core::kNativeFormat, 256, callback));
+    AW_REQUIRE(output.start());
+    AW_CHECK(output.isUsingFallback());
+
+    primaryPtr->setOpens(true);
+    AW_REQUIRE(output.refresh());
+    AW_CHECK(!output.isUsingFallback());
+    AW_CHECK(output.isRunning());
+    AW_CHECK_EQ(primaryPtr->openCalls, 2);
 }
 
 AW_TEST(AlsaPcm, PacksNormalizedFloatAsSigned24LittleEndian) {

@@ -20,6 +20,7 @@ public:
                       core::FrameCount bufferFrames,
                       hal::AudioRenderCallback& callback) override;
     core::Status start() override;
+    core::Status refresh() override;
     void stop() noexcept override;
     void close() noexcept override;
 
@@ -33,6 +34,9 @@ private:
     std::unique_ptr<hal::AudioOutputInterface> primary_;
     std::unique_ptr<hal::AudioOutputInterface> fallback_;
     hal::AudioOutputInterface* selected_{nullptr};
+    core::AudioFormat requestedFormat_{};
+    core::FrameCount requestedBufferFrames_{0};
+    hal::AudioRenderCallback* callback_{nullptr};
 };
 
 }  // namespace aw::platform

@@ -19,7 +19,7 @@ if [[ ! -x "$BINARY" ]]; then
 fi
 
 export AW_PROJECTS_ROOT="${AW_PROJECTS_ROOT:-$HOME/audio-projects}"
-export AW_ALSA_DEVICE="${AW_ALSA_DEVICE:-hw:0,0}"
+export AW_ALSA_DEVICE="${AW_ALSA_DEVICE:-hw:TP7,0}"
 mkdir -p "$AW_PROJECTS_ROOT"
 
 case "${1:-}" in
