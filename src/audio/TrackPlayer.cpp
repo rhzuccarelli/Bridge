@@ -237,10 +237,15 @@ void TrackPlayer::setLoop(core::FrameRange range, bool enabled) noexcept {
 
 void TrackPlayer::requestStreamPosition(core::FrameIndex timelinePosition) noexcept {
     if (!impl_->source) return;
-    impl_->source->requestedTimeline.store(timelinePosition, std::memory_order_relaxed);
-    impl_->source->requestedGeneration.fetch_add(1, std::memory_order_release);
-    impl_->source->currentBlock.reset();
-    impl_->source->previousBlock.reset();
+    SharedStreamSource& source = *impl_->source;
+    source.requestedTimeline.store(timelinePosition, std::memory_order_relaxed);
+    source.requestedGeneration.fetch_add(1, std::memory_order_release);
+    source.currentBlock.reset();
+    source.previousBlock.reset();
+    // This is the ring's consumer side. Remove prefetched blocks from the old
+    // generation immediately so the producer has capacity to refill the new
+    // position before Play resumes.
+    while (source.blocks.pop()) {}
 }
 
 void TrackPlayer::render(AudioBuffer& destination,

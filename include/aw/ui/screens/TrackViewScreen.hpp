@@ -24,13 +24,13 @@ public:
     [[nodiscard]] bool isDirty() const noexcept override { return dirty_.isSet(); }
     void render(display::Painter& painter) override;
 
-    [[nodiscard]] core::TrackId focusedTrack() const noexcept { return focusedTrack_; }
+    [[nodiscard]] core::TrackId focusedTrack() const noexcept;
 
 private:
     project::ProjectManager& projects_;
     audio::AudioEngine& engine_;
     DirtyFlag dirty_;
-    core::TrackId focusedTrack_{core::kInvalidTrackId};
+    std::size_t focusedIndex_{0};
     std::array<float, project::kTrackCount> levels_{};
 };
 

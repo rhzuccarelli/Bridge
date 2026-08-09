@@ -13,7 +13,7 @@ void Transport::requestPlay() noexcept {
 
 void Transport::requestStop() noexcept {
     state_.store(State::Stopped, std::memory_order_release);
-    pendingSeek_.store(0, std::memory_order_release);
+    requestSeek(0);  // Rewind players as well as the visible playhead.
 }
 
 void Transport::requestPause() noexcept { state_.store(State::Paused, std::memory_order_release); }

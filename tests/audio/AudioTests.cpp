@@ -244,6 +244,21 @@ AW_TEST(Transport, RecordsStateRequests) {
     AW_CHECK(!transport.isRecordArmed());
 }
 
+AW_TEST(Transport, StopRequestsARewindForStreamingPlayers) {
+    audio::Transport transport;
+    transport.requestSeek(48000);
+    transport.advance(0);
+    const std::uint64_t revisionBeforeStop = transport.seekRevision();
+
+    transport.requestPlay();
+    transport.requestStop();
+
+    AW_CHECK_EQ(transport.state(), events::TransportState::Stopped);
+    AW_CHECK(transport.seekRevision() > revisionBeforeStop);
+    AW_CHECK_EQ(transport.advance(0), core::FrameIndex{0});
+    AW_CHECK_EQ(transport.position(), core::FrameIndex{0});
+}
+
 AW_TEST(Transport, StoresTheLoopRange) {
     audio::Transport transport;
     transport.setLoop(core::FrameRange{48000, 96000}, true);
