@@ -21,6 +21,10 @@ void Painter::fillRect(const hal::Rect& area, Color color) noexcept {
         static_cast<std::int16_t>(area.y + area.height),
         static_cast<std::int16_t>(target_.height()));
 
+    if (right <= left || bottom <= top) {
+        return;
+    }
+
     for (std::int16_t y = top; y < bottom; ++y) {
         std::span<Color> line = target_.row(static_cast<std::uint16_t>(y));
         std::fill(line.begin() + left, line.begin() + right, color);

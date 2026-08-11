@@ -95,6 +95,36 @@ AW_TEST(Painter, ClipsRectanglesThatCrossTheEdge) {
     AW_CHECK_EQ(pixels[15 * 16 + 15], display::Color{0x00FF});
 }
 
+AW_TEST(Painter, IgnoresRectanglesFullyOutsideTheFramebuffer) {
+    display::Framebuffer framebuffer{16, 16};
+    framebuffer.fill(0x0000);
+    framebuffer.clearDamage();
+    display::Painter painter{framebuffer};
+
+    painter.fillRect(hal::Rect{-4, 2, 1, 1}, 0xFFFF);
+    painter.fillRect(hal::Rect{20, 2, 1, 1}, 0xFFFF);
+    painter.fillRect(hal::Rect{2, -4, 1, 1}, 0xFFFF);
+    painter.fillRect(hal::Rect{2, 20, 1, 1}, 0xFFFF);
+
+    AW_CHECK(!framebuffer.hasDamage());
+    AW_CHECK(std::all_of(framebuffer.pixels().begin(), framebuffer.pixels().end(),
+                         [](display::Color pixel) { return pixel == 0x0000; }));
+}
+
+AW_TEST(Painter, ClipsCenteredTextWiderThanFramebuffer) {
+    display::Framebuffer framebuffer{128, 64};
+    framebuffer.fill(display::palette::kBackground);
+    framebuffer.clearDamage();
+    display::Painter painter{framebuffer};
+
+    painter.drawTextIn(hal::Rect{0, 38, 128, 12}, "TP-7 RECONNECTING", display::smallFont(),
+                       display::palette::kTextDim, display::TextAlign::Center);
+
+    AW_CHECK(framebuffer.hasDamage());
+    AW_CHECK(std::any_of(framebuffer.pixels().begin(), framebuffer.pixels().end(),
+                         [](display::Color pixel) { return pixel == display::palette::kTextDim; }));
+}
+
 AW_TEST(Painter, BitmapTextDrawsVisiblePixels) {
     display::Framebuffer framebuffer{32, 16};
     framebuffer.fill(display::palette::kBackground);
