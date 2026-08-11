@@ -14,6 +14,7 @@ namespace aw::platform::rpi {
 struct RpiConfig {
     core::Path projectsRoot{"/var/lib/audio-workstation/projects"};
     std::string alsaDevice{"hw:TP7,0"};
+    std::string midiDevice{"hw:TP7,0,0"};
     GpioPinMap pins{GpioPinMap::prototype()};
     SpiDisplayConfig display{};
 };

@@ -105,7 +105,7 @@ core::Status Application::initialise() {
     uiController_ = std::make_unique<ui::UiController>(
         *framebuffer_, *flusher_, bus_, *projects_, *engine_, mtpManager_.get(),
         mtpBrowser_.get(), importService_.get(), exportService_.get(), taskRunner_.get(),
-        &workerQueue_);
+        &workerQueue_, platform_.deviceMode.get());
     if (auto status = uiController_->initialise(); !status) {
         return status;
     }

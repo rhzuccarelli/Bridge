@@ -12,6 +12,7 @@
 #include "aw/platform/desktop/DevBackends.hpp"
 #include "aw/platform/posix/PosixStorage.hpp"
 #include "aw/platform/rpi/AlsaAudioOutput.hpp"
+#include "aw/platform/rpi/AlsaTp7ModeSwitcher.hpp"
 #include "aw/platform/rpi/LibMtpDevice.hpp"
 #include "aw/platform/rpi/LibUsbHost.hpp"
 
@@ -43,6 +44,9 @@ core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
     if (const char* device = std::getenv("AW_ALSA_DEVICE")) {
         effective.alsaDevice = device;
     }
+    if (const char* device = std::getenv("AW_MIDI_DEVICE")) {
+        effective.midiDevice = device;
+    }
 
     hal::Platform platform;
     platform.clock = std::make_unique<SteadyClock>();
@@ -50,6 +54,7 @@ core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
     platform.audioInput = nullptr;  // Phase 4+: capture for punch-in.
     platform.usb = std::make_unique<LibUsbHost>();
     platform.mtp = std::make_unique<LibMtpDevice>();
+    platform.deviceMode = std::make_unique<AlsaTp7ModeSwitcher>(effective.midiDevice);
 
     // Prefer exact 48 kHz / S24_3LE ALSA playback. A disconnected interface
     // falls back to the wall-clock silent backend so projects and UI remain
@@ -85,6 +90,7 @@ core::Result<hal::Platform> createPlatform(const RpiConfig& config) {
     core::log::info(kModule, "Raspberry Pi platform ready: " + backends.description +
                                  " + GPIO (" + effective.pins.chipName + ")");
     core::log::info(kModule, "ALSA playback device: " + effective.alsaDevice);
+    core::log::info(kModule, "TP-7 MIDI device: " + effective.midiDevice);
     return platform;
 }
 

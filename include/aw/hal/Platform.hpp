@@ -7,6 +7,7 @@
 #include "aw/hal/ButtonInterface.hpp"
 #include "aw/hal/ClockInterface.hpp"
 #include "aw/hal/DisplayInterface.hpp"
+#include "aw/hal/DeviceModeInterface.hpp"
 #include "aw/hal/EncoderInterface.hpp"
 #include "aw/hal/MTPInterface.hpp"
 #include "aw/hal/StorageInterface.hpp"
@@ -34,6 +35,7 @@ struct Platform {
     std::unique_ptr<AudioInputInterface> audioInput;  ///< Optional.
     std::unique_ptr<USBInterface> usb;
     std::unique_ptr<MTPInterface> mtp;                ///< Optional.
+    std::unique_ptr<DeviceModeInterface> deviceMode;  ///< Optional TP-7 mode control.
 
     [[nodiscard]] bool isComplete() const noexcept {
         return clock && storage && display && buttons && encoder && audioOutput && usb;

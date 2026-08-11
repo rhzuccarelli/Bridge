@@ -53,7 +53,8 @@ UiController::UiController(display::Framebuffer& framebuffer,
                            project::ImportService* importer,
                            project::ExportService* exporter,
                            TaskRunner* tasks,
-                           events::EventQueue* workerQueue)
+                           events::EventQueue* workerQueue,
+                           hal::DeviceModeInterface* deviceMode)
     : framebuffer_{framebuffer},
       flusher_{flusher},
       bus_{bus},
@@ -65,6 +66,7 @@ UiController::UiController(display::Framebuffer& framebuffer,
       exporter_{exporter},
       tasks_{tasks},
       workerQueue_{workerQueue},
+      deviceMode_{deviceMode},
       painter_{framebuffer} {}
 
 UiController::~UiController() {
@@ -83,7 +85,7 @@ core::Status UiController::initialise() {
     navigator_.registerScreen(std::make_unique<SettingsScreen>());
     if (mtpManager_ && mtpBrowser_ && importer_ && exporter_ && tasks_ && workerQueue_) {
         navigator_.registerScreen(std::make_unique<ImportScreen>(
-            *mtpManager_, *mtpBrowser_, *importer_, *tasks_, *workerQueue_));
+            *mtpManager_, *mtpBrowser_, *importer_, *tasks_, *workerQueue_, deviceMode_));
         navigator_.registerScreen(std::make_unique<ExportScreen>(
             *mtpManager_, *mtpBrowser_, projects_, *exporter_, *tasks_, *workerQueue_));
     } else {

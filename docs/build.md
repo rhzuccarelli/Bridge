@@ -59,13 +59,18 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DAW_PLATFORM=rpi
 cmake --build build
 ```
 
-Selects the `rpi` backend and requires `libasound2-dev`. Choose the playback PCM with
-`AW_ALSA_DEVICE` (default `hw:0,0`):
+Selects the `rpi` backend and requires `libasound2-dev`. The TP-7 defaults are
+`AW_ALSA_DEVICE=hw:TP7,0` and `AW_MIDI_DEVICE=hw:TP7,0,0`; either can be overridden
+for bench hardware:
 
 ```bash
 aplay -l
 AW_ALSA_DEVICE=hw:2,0 ./scripts/run-pi.sh --oled
 ```
+
+Opening Import sends the TP-7's MTP-mode SysEx through the raw-MIDI device. After an
+import (or when leaving Import), Bridge releases the libmtp session and the TP-7
+automatically re-enumerates as USB audio. Export does not initiate a mode change.
 
 The backend prefers `S24_3LE`, 48 kHz stereo. It also recognizes the TP-7's native
 `S24_3LE`, 96 kHz, six-channel playback endpoint: Bridge explicitly upsamples the

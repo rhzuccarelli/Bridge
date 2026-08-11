@@ -51,7 +51,7 @@ struct DeviceEvent {
     std::uint32_t deviceKey{0};
 };
 
-enum class JobKind : std::uint8_t { Import, Export, Save, Scan };
+enum class JobKind : std::uint8_t { Import, Export, Save, Scan, DeviceMode };
 
 /// Progress of a long running background job.
 struct JobProgressEvent {

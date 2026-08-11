@@ -71,6 +71,7 @@ elseif(AW_PLATFORM STREQUAL "rpi")
 
     add_library(aw_platform STATIC
         rpi/AlsaAudioOutput.cpp
+        rpi/AlsaTp7ModeSwitcher.cpp
         rpi/GpioInput.cpp
         rpi/LibMtpDevice.cpp
         rpi/LibUsbHost.cpp

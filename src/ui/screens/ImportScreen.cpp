@@ -9,15 +9,54 @@ namespace aw::ui {
 
 ImportScreen::ImportScreen(mtp::MtpManager& manager, mtp::MtpBrowser& browser,
                            project::ImportService& importer, TaskRunner& tasks,
-                           events::EventQueue& workerQueue) noexcept
+                           events::EventQueue& workerQueue,
+                           hal::DeviceModeInterface* deviceMode) noexcept
     : manager_{manager}, browser_{browser}, importer_{importer}, tasks_{tasks},
-      workerQueue_{workerQueue} {}
+      workerQueue_{workerQueue}, deviceMode_{deviceMode} {}
 
 void ImportScreen::onEnter() {
     selection_ = 0; scrollOffset_ = 0; transferInProgress_ = false; progressPercent_ = 0;
-    importCompleted_ = false;
+    importCompleted_ = false; scanning_ = false; switchingMode_ = false;
+    waitingForMtp_ = false; waitingMillis_ = 0;
     workerCompletionPending_.store(false, std::memory_order_release);
-    lastError_ = core::ErrorCode::Unknown; scanning_ = true;
+    lastError_ = core::ErrorCode::Unknown;
+    if (manager_.state() == mtp::ConnectionState::Detected ||
+        manager_.state() == mtp::ConnectionState::Connected) {
+        startScan();
+    } else {
+        requestMtpMode();
+    }
+    dirty_.set();
+}
+
+void ImportScreen::onExit() {
+    if (!transferInProgress_ && manager_.state() == mtp::ConnectionState::Connected) {
+        (void)tasks_.submit([this] { manager_.disconnect(); });
+    }
+}
+
+void ImportScreen::requestMtpMode() {
+    if (deviceMode_ == nullptr) {
+        lastError_ = core::ErrorCode::DeviceNotConnected;
+        return;
+    }
+    switchingMode_ = true;
+    const std::uint32_t modeId = ++jobId_;
+    const core::Status accepted = tasks_.submit([this, modeId] {
+        const core::Status result = deviceMode_->requestMtpMode();
+        workerQueue_.post(events::JobFinishedEvent{
+            events::JobKind::DeviceMode, modeId, static_cast<bool>(result),
+            result ? core::ErrorCode::Unknown : result.error().code()});
+    });
+    if (!accepted) {
+        switchingMode_ = false;
+        lastError_ = accepted.error().code();
+    }
+}
+
+void ImportScreen::startScan() {
+    if (scanning_) return;
+    switchingMode_ = false; waitingForMtp_ = false; scanning_ = true;
     const std::uint32_t scanId = ++jobId_;
     auto accepted = tasks_.submit([this, scanId] {
         core::Status result = manager_.connect();
@@ -32,16 +71,30 @@ void ImportScreen::onEnter() {
             static_cast<bool>(result), result ? core::ErrorCode::Unknown : result.error().code()});
     });
     if (!accepted) { scanning_ = false; lastError_ = accepted.error().code(); }
-    dirty_.set();
 }
 
 NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
+    if (const auto* device = std::get_if<events::DeviceEvent>(&event)) {
+        if (device->kind == events::DeviceKind::Mtp && device->attached) {
+            startScan();
+            dirty_.set();
+            return NavigationRequest::none();
+        }
+    }
     if (const auto* progress = std::get_if<events::JobProgressEvent>(&event)) {
         if (progress->kind == events::JobKind::Import) {
             progressPercent_ = progress->percent; dirty_.set(); return NavigationRequest::none();
         }
     }
     if (const auto* finished = std::get_if<events::JobFinishedEvent>(&event)) {
+        if (finished->kind == events::JobKind::DeviceMode && finished->jobId == jobId_) {
+            switchingMode_ = false;
+            waitingForMtp_ = finished->succeeded;
+            waitingMillis_ = 0;
+            lastError_ = finished->succeeded ? core::ErrorCode::Unknown : finished->error;
+            dirty_.set();
+            return NavigationRequest::none();
+        }
         if (finished->kind == events::JobKind::Scan && finished->jobId == jobId_) {
             scanning_ = false;
             lastError_ = finished->succeeded ? core::ErrorCode::Unknown : finished->error;
@@ -103,6 +156,7 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
                     workerCompletionPending_.store(false, std::memory_order_release);
                     (void)tasks_.submit([this, importId, plan = std::move(plan)] {
                         const core::Status result = importer_.run(plan, importId);
+                        manager_.disconnect();
                         workerError_.store(result ? core::ErrorCode::Unknown
                                                   : result.error().code(),
                                            std::memory_order_relaxed);
@@ -135,6 +189,7 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
                 workerCompletionPending_.store(false, std::memory_order_release);
                 (void)tasks_.submit([this, importId, plan = std::move(plan)] {
                     const core::Status result = importer_.run(plan, importId);
+                    manager_.disconnect();
                     workerError_.store(result ? core::ErrorCode::Unknown
                                               : result.error().code(),
                                        std::memory_order_relaxed);
@@ -149,7 +204,15 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
     return NavigationRequest::ignored();
 }
 
-void ImportScreen::update(std::uint32_t /*elapsedMillis*/) {
+void ImportScreen::update(std::uint32_t elapsedMillis) {
+    if (waitingForMtp_) {
+        waitingMillis_ += elapsedMillis;
+        if (waitingMillis_ >= 8000) {
+            waitingForMtp_ = false;
+            lastError_ = core::ErrorCode::DeviceNotConnected;
+            dirty_.set();
+        }
+    }
     if (!workerCompletionPending_.exchange(false, std::memory_order_acq_rel)) return;
     transferInProgress_ = false;
     if (workerSucceeded_.load(std::memory_order_relaxed)) {
@@ -166,7 +229,15 @@ void ImportScreen::render(display::Painter& painter) {
     const auto& font = display::smallFont();
     painter.fillRect({0, 0, 128, 12}, display::palette::kSurface);
     painter.drawText(2, 0, "IMPORT TP-7", font, display::palette::kText);
-    if (scanning_) {
+    if (switchingMode_) {
+        painter.drawTextIn({0, 20, 128, 12}, "STARTING MTP", font,
+                           display::palette::kText, display::TextAlign::Center);
+        painter.drawTextIn({0, 38, 128, 12}, "TP-7 RECONNECTING", font,
+                           display::palette::kTextDim, display::TextAlign::Center);
+    } else if (waitingForMtp_) {
+        painter.drawTextIn({0, 24, 128, 12}, "WAITING FOR TP-7", font,
+                           display::palette::kText, display::TextAlign::Center);
+    } else if (scanning_) {
         painter.drawTextIn({0, 24, 128, 12}, "READING TP-7", font,
                            display::palette::kText, display::TextAlign::Center);
     } else if (transferInProgress_) {

@@ -7,6 +7,7 @@
 #include "aw/display/Framebuffer.hpp"
 #include "aw/display/Painter.hpp"
 #include "aw/events/EventBus.hpp"
+#include "aw/hal/DeviceModeInterface.hpp"
 #include "aw/project/ProjectManager.hpp"
 #include "aw/project/ImportService.hpp"
 #include "aw/project/ExportService.hpp"
@@ -40,7 +41,8 @@ public:
                  project::ImportService* importer = nullptr,
                  project::ExportService* exporter = nullptr,
                  TaskRunner* tasks = nullptr,
-                 events::EventQueue* workerQueue = nullptr);
+                 events::EventQueue* workerQueue = nullptr,
+                 hal::DeviceModeInterface* deviceMode = nullptr);
     ~UiController();
 
     UiController(const UiController&) = delete;
@@ -74,6 +76,7 @@ private:
     project::ExportService* exporter_;
     TaskRunner* tasks_;
     events::EventQueue* workerQueue_;
+    hal::DeviceModeInterface* deviceMode_;
 
     Navigator navigator_;
     display::Painter painter_;
