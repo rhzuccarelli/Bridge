@@ -17,6 +17,7 @@
 #include "aw/project/ImportService.hpp"
 #include "aw/project/ProjectManager.hpp"
 #include "aw/ui/UiController.hpp"
+#include "aw/ui/TaskRunner.hpp"
 
 namespace aw::app {
 
@@ -62,7 +63,9 @@ private:
 
     events::EventQueue inputQueue_;   ///< Produced by the input backends.
     events::EventQueue engineQueue_;  ///< Produced by the audio engine.
-    events::EventQueue workerQueue_;  ///< Produced by the I/O worker.
+    events::EventQueue projectQueue_; ///< Produced by the project manager.
+    events::EventQueue usbQueue_;     ///< Produced by the libusb event thread.
+    events::EventQueue workerQueue_;  ///< Produced by the single I/O worker.
     events::EventBus bus_;
     std::unique_ptr<events::InputEventSource> inputSource_;
 
@@ -72,6 +75,7 @@ private:
     std::unique_ptr<mtp::MtpBrowser> mtpBrowser_;
     std::unique_ptr<project::ImportService> importService_;
     std::unique_ptr<project::ExportService> exportService_;
+    std::unique_ptr<ui::TaskRunner> taskRunner_;
 
     std::unique_ptr<display::Framebuffer> framebuffer_;
     std::unique_ptr<display::DisplayFlusher> flusher_;

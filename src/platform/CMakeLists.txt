@@ -29,6 +29,9 @@ find_package(Threads REQUIRED)
 ##
 add_library(aw_platform_dev STATIC
     CompositeButtons.cpp
+    CompositeEncoder.cpp
+    FallbackAudioOutput.cpp
+    NullAudioOutput.cpp
     desktop/DevBackends.cpp
     desktop/KeyboardInput.cpp
     desktop/TerminalDisplay.cpp
@@ -60,29 +63,33 @@ if(AW_PLATFORM STREQUAL "simulator")
 
 elseif(AW_PLATFORM STREQUAL "rpi")
 
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
+    pkg_check_modules(GPIOD REQUIRED IMPORTED_TARGET libgpiod)
+    pkg_check_modules(USB REQUIRED IMPORTED_TARGET libusb-1.0)
+    pkg_check_modules(MTP REQUIRED IMPORTED_TARGET libmtp)
+
     add_library(aw_platform STATIC
         rpi/AlsaAudioOutput.cpp
+        rpi/AlsaTp7ModeSwitcher.cpp
         rpi/GpioInput.cpp
         rpi/LibMtpDevice.cpp
         rpi/LibUsbHost.cpp
         rpi/RpiPlatform.cpp
         rpi/SpiDisplay.cpp)
     target_compile_definitions(aw_platform PUBLIC AW_PLATFORM_RPI=1)
+    target_link_libraries(aw_platform PRIVATE PkgConfig::ALSA PkgConfig::GPIOD
+                                              PkgConfig::USB PkgConfig::MTP)
 
-    # Phase 5/6/7/8 add the real dependencies here.  They are looked up but not
-    # required yet, so the Pi target builds today with only the stubs.
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(ALSA QUIET alsa)
-        pkg_check_modules(GPIOD QUIET libgpiod)
-        pkg_check_modules(USB QUIET libusb-1.0)
-        pkg_check_modules(MTP QUIET libmtp)
-        foreach(dep ALSA GPIOD USB MTP)
-            if(NOT ${dep}_FOUND)
-                message(STATUS "  rpi backend: ${dep} not found (stubs remain in use)")
-            endif()
-        endforeach()
-    endif()
+    add_executable(aw-alsa-test rpi/alsa_test_main.cpp rpi/AlsaAudioOutput.cpp)
+    target_include_directories(aw-alsa-test PRIVATE ${AW_INCLUDE_DIR})
+    target_link_libraries(aw-alsa-test PRIVATE aw::core aw::hal aw::compiler_options
+                                                   PkgConfig::ALSA Threads::Threads)
+
+    add_executable(aw-gpio-test rpi/gpio_test_main.cpp rpi/GpioInput.cpp)
+    target_include_directories(aw-gpio-test PRIVATE ${AW_INCLUDE_DIR})
+    target_link_libraries(aw-gpio-test PRIVATE aw::core aw::hal aw::compiler_options
+                                                   PkgConfig::GPIOD Threads::Threads)
 
 endif()
 

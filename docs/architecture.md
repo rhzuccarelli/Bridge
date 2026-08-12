@@ -107,7 +107,7 @@ Fixed now, in Phase 1, because it is the decision everything else is built on.
 | Context | What runs there | Constraints |
 | --- | --- | --- |
 | **Audio thread** | `AudioEngine::renderAudio`, `Mixer`, `TrackPlayer::render`, `Transport::advance` | No allocation, no locks, no I/O, no logging, no exceptions. |
-| **Streaming thread** | `TrackPlayer::prefetch`, WAV reads | Blocking file I/O, fills per-track ring buffers. |
+| **Streaming thread** | `TrackPlayer::stream`, WAV reads, retired-scene reclamation | Blocking file I/O, fills per-track ring buffers. |
 | **I/O worker** | MTP transfers, project save/load, directory scans | Blocking, seconds-long operations. Cancellable. |
 | **Main loop** | Event dispatch, UI update, render, display flush | Never blocks on anything. |
 
@@ -187,6 +187,62 @@ Why this matters:
   with no project code in the binary.
 - The port keeps the engine **byte-for-byte identical** — it depends only on `core`,
   `hal` and `events`.
+
+### Phase 4 realtime ownership
+
+`setScene()` performs all path lookup, WAV opening, allocation and initial buffering on
+the control thread. It publishes one prepared scene pointer. The audio callback adopts
+that pointer only at the next block boundary and sends the previous scene through a
+wait-free retirement queue. The streaming thread is the sole reclaimer, so neither
+destruction nor allocator work can occur in the callback.
+
+Each clip owns a bounded SPSC queue of 512-frame stereo blocks. Fifteen usable blocks
+provide about 160 ms of read-ahead at 48 kHz while keeping memory fixed regardless of
+recording length. The streaming thread is the only producer and the audio callback the
+only consumer. A generation number invalidates queued blocks after an explicit seek;
+loop heads are queued in playback order so ordinary wrapping stays sample-continuous.
+
+Alternatives considered:
+
+- Loading a whole clip is simple but makes memory proportional to recording duration
+  and cannot fit the ESP32-P4 target.
+- A mutex-protected shared cache simplifies ownership but can priority-invert the audio
+  callback behind SD-card I/O.
+- Reference-counted scene snapshots simplify lifetime code, but releasing the last
+  reference can invoke destruction on the audio thread. Explicit retirement keeps the
+  realtime cost fixed and visible.
+
+Live gain, pan, mute, solo and master-gain changes cross a second SPSC command queue and
+are applied at block boundaries. They do not rebuild scenes and cannot race scene
+replacement. Loop blocks are split at the exact boundary before the transport wraps,
+so a hardware period may contain the tail and head of a loop without losing sync.
+Meter and position events are throttled to 30 Hz; transport changes remain immediate.
+
+### Record behavior
+
+Bridge uses Portastudio semantics: `Record(track)` arms a track without moving the
+playhead; a subsequent `Play` enters `Recording`. `Stop` ends the pass but leaves the
+track armed, while explicit disarm returns future Play presses to normal playback.
+Phase 4 implements only this transport contract. Capture and punch-in are intentionally
+deferred until an audio-input backend exists.
+
+### Raspberry Pi ALSA output
+
+The Pi backend opens one playback PCM as interleaved `S24_3LE`, exactly 48 kHz and
+stereo, with ALSA resampling disabled. The six synchronized stereo tracks are already
+mixed into that stereo bus by `AudioEngine`; ALSA never sees project tracks and does no
+mixing. The requested period is 256 frames and the hardware buffer targets two periods.
+
+A dedicated writer thread attempts `SCHED_FIFO`, pulls one float period from the engine,
+packs it to signed 24-bit little-endian without allocation, and handles partial writes.
+ALSA's recovery helper repairs xruns and suspended/interrupted writes while the callback
+receives an xrun notification for measurement. Immediate drop was chosen for Stop because
+monitor audio should not continue draining after the user stops transport.
+
+The composition root wraps ALSA with `FallbackAudioOutput`. Failure to open the selected
+PCM logs a warning and activates `NullAudioOutput`, preserving wall-clock transport and
+UI behavior with no sound device. Allowing ALSA's `plug` layer to resample was rejected:
+it hides incompatible hardware and breaks the fixed-rate timing guarantee.
 
 ---
 
@@ -330,8 +386,19 @@ depth creeps in one screen at a time unless something stops it.
 
 Interaction rules:
 
-- The four physical track buttons select a track **directly**. Never scroll to reach
-  a track.
+- Projects contain exactly six synchronized stereo tracks. The prototype's four physical
+  the planned panel has six track buttons and six faders, so tracks 1–6 map directly
+  with no hidden bank state.
+
+### Cross-deck channel routing requirement
+
+A future comp/edit command must address source and destination sides independently.
+For example, “Deck A / track 5 / left” may feed “Deck C / track 2 / right” while the
+other side of Deck C track 2 keeps a different source. The existing clip model already
+identifies an immutable source file and source channel; the editor must add an explicit
+destination side (`Left`, `Right`, or `Stereo`) instead of duplicating every mono source
+to both destination channels. This remains non-destructive: the command creates a
+reference and never copies or rewrites the source WAV.
 - Encoder push cycles what the encoder edits (gain → pan → position) rather than
   opening a submenu.
 - Transport, Back, Undo, Save and Import/Export work on **every** screen, handled
@@ -374,10 +441,46 @@ a mechanical change to three macros.
 | --- | --- |
 | 48 kHz only | Removes resampling from the realtime path entirely — the thing that makes multitrack playback feasible on an ESP32-P4. Non-matching files convert once, on import. |
 | 24-bit | Matches the TP-7, so exports drop back onto the device with no conversion. |
-| 4 tracks | Matches the four front-panel buttons. The constant lives in `Timeline`, so an 8-track revision is a constant change, not a data-model change. |
+| 6 synchronized stereo tracks | Fixed product requirement for Bridge: twelve source channels mixed to one stereo monitor/output bus. Physical-button count does not limit project capacity. |
+| One active deck | Only one deck is handed to the realtime engine. Other decks remain silent source libraries; assigning one of their pairs creates a non-destructive clip reference, not an audio copy. |
+| TP-7 USB monitor at 96 kHz | The portable engine and all files remain 48 kHz. The Raspberry Pi backend alone performs exact 2x monitor upsampling and maps stereo to the TP-7's FL/FR channels; four remaining USB channels are silent. |
 | Float mixing | Keeps the mixer free of format concerns; int conversion is one cheap pass in the backend, which is also where dither will live. |
 
 Options a hardware recorder does not need are options the user has to scroll past.
+
+### WAV streaming and recovery
+
+`WavReader` accepts one through twelve interleaved PCM channels, matching TP-7 files
+that range from mono through six stereo pairs. A clip stores a zero-based first source
+channel and a width of one or two channels; mono is duplicated onto the stereo output.
+Unknown chunks such as the TP-7's `acid` chunk are preserved in the immutable source
+file and safely skipped during streaming.
+
+The realtime stream is source-centric rather than lane-centric. Routes with the same
+file, source range and timeline placement share one `WavReader` and one bounded
+12-channel SPSC ring; each `TrackPlayer` selects its own mono channel or stereo pair
+from those blocks and retains independent gain, pan, mute, solo and meter state. This
+opens a 12-channel TP-7 recording once instead of six times and uses roughly half the
+buffer memory of six duplicated stereo streams. Differently trimmed or positioned
+uses remain separate streams because they require independent read cursors.
+
+`WavReader` walks the RIFF chunk list through `hal::FileHandle`, validates every
+declared range against both the RIFF boundary and physical file size, and converts
+only the caller-requested block into planar float. Unknown chunks are skipped, and
+LIST/INFO allocation is capped at 1 MiB so an untrusted import cannot force an
+unbounded metadata allocation.
+
+`WavWriter` emits a conventional 44-byte PCM header, appends interleaved blocks, and
+patches RIFF/data sizes after each second of newly written audio and again on close.
+The alternatives were patching every block (best recovery, but synchronous seeks and
+flushes violate the storage contract and amplify flash writes) or only on close (fast,
+but a power loss leaves an unusable file). A one-second checkpoint bounds lost tail
+audio while keeping filesystem I/O off the realtime callback and out of each block.
+
+RIFF's 32-bit chunk sizes cap a file below 4 GiB. The writer rejects growth beyond
+that boundary rather than silently wrapping; RF64 was not selected because TP-7
+interoperability matters more than recordings longer than the RIFF limit. Adding RF64
+later can be isolated behind the same reader/writer API.
 
 ---
 
@@ -402,20 +505,10 @@ libmtp, FatFS instead of `std::filesystem`.
 
 ---
 
-## Open questions needing a decision
+## Resolved phase decisions
 
-**Phase 3 — `metadata.json` parser.** Hand-rolled minimal JSON, or a header-only
-library (nlohmann/json, or a smaller one)? A dependency buys robustness; hand-rolling
-buys a known, small flash/RAM cost on the P4 and no supply chain. Given the schema is
-ours and tiny, the current intent is **hand-rolled**, flagged in
-`include/aw/project/ProjectMetadata.hpp` for confirmation.
-
-**Phase 5 — buffer size default.** 256 frames at 48 kHz is ~5.3 ms per period, ~10.7 ms
-of latency with two periods. Good for a responsive transport, tight for a
-non-realtime-tuned Pi OS kernel. Proposal: default 256, expose it in Settings, and
-measure on the actual board.
-
-**Phase 6 — the record button.** Does `Record` arm the focused track and require
-`Play` to roll (Portastudio behaviour), or does it start recording immediately
-(field-recorder behaviour)? This changes the transport state machine, so it should be
-settled before Phase 4 finishes.
+- Phase 3 uses a small purpose-built metadata parser: bounded footprint and no supply
+  chain, at the cost of supporting only Bridge's known schema.
+- Phase 4 uses Portastudio recording semantics: Record arms; Play rolls.
+- Phase 5 defaults to 256-frame periods and a two-period hardware buffer. Hardware
+  acceptance must measure xruns before this becomes a non-adjustable product constant.

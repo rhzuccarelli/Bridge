@@ -11,14 +11,76 @@
 /// touchscreen and no terminal.
 ///
 #include "aw/platform/CompositeButtons.hpp"
+#include "aw/platform/CompositeEncoder.hpp"
+#include "aw/platform/FallbackAudioOutput.hpp"
+#include "aw/platform/rpi/AlsaPcm.hpp"
+#include "aw/platform/rpi/GpioInput.hpp"
 #include "aw/platform/desktop/KeyboardInput.hpp"
 #include "aw/platform/desktop/VirtualPanel.hpp"
 #include "framework/Test.hpp"
 
+#include <array>
 #include <vector>
 
 using namespace aw;
 using namespace aw::platform;
+
+AW_TEST(AlsaPcm, ConvertsStereo48ToTp7SixChannel96) {
+    const std::array<float, 4> stereo{0.25F, -0.25F, 0.75F, -0.75F};
+    std::array<float, 24> tp7{};
+    rpi::Tp7MonitorConverterState state;
+    rpi::convertStereo48ToTp7Monitor96(stereo, tp7, state);
+
+    AW_CHECK_EQ(tp7[0], 0.0F);
+    AW_CHECK_EQ(tp7[1], 0.0F);
+    AW_CHECK_EQ(tp7[6], 0.125F);
+    AW_CHECK_EQ(tp7[7], -0.125F);
+    AW_CHECK_EQ(tp7[12], 0.25F);
+    AW_CHECK_EQ(tp7[13], -0.25F);
+    AW_CHECK_EQ(tp7[18], 0.5F);
+    AW_CHECK_EQ(tp7[19], -0.5F);
+    AW_CHECK_EQ(state.previousLeft, 0.75F);
+    AW_CHECK_EQ(state.previousRight, -0.75F);
+    for (std::size_t frame = 0; frame < 4; ++frame) {
+        for (std::size_t channel = 2; channel < 6; ++channel) {
+            AW_CHECK_EQ(tp7[frame * 6U + channel], 0.0F);
+        }
+    }
+}
+
+AW_TEST(GpioButton, DebouncesAndGeneratesHoldActions) {
+    rpi::ButtonStateMachine button;
+    AW_CHECK(!button.update(true, 1'000).has_value());
+    AW_CHECK(!button.update(false, 5'000).has_value());
+    AW_CHECK(!button.update(true, 10'000).has_value());
+    const auto pressed = button.update(true, 30'000);
+    AW_REQUIRE(pressed.has_value());
+    AW_CHECK_EQ(*pressed, core::ButtonAction::Pressed);
+    AW_CHECK(button.isPressed());
+    const auto held = button.update(true, 530'000);
+    AW_REQUIRE(held.has_value());
+    AW_CHECK_EQ(*held, core::ButtonAction::LongPressed);
+    const auto repeat = button.update(true, 630'000);
+    AW_REQUIRE(repeat.has_value());
+    AW_CHECK_EQ(*repeat, core::ButtonAction::Repeat);
+    AW_CHECK(!button.update(false, 640'000).has_value());
+    const auto released = button.update(false, 660'000);
+    AW_REQUIRE(released.has_value());
+    AW_CHECK_EQ(*released, core::ButtonAction::Released);
+}
+
+AW_TEST(GpioEncoder, CoalescesQuadratureTransitionsIntoDetents) {
+    rpi::QuadratureDecoder decoder;
+    decoder.reset(false, false);
+    AW_CHECK_EQ(decoder.update(false, true), 0);
+    AW_CHECK_EQ(decoder.update(true, true), 0);
+    AW_CHECK_EQ(decoder.update(true, false), 0);
+    AW_CHECK_EQ(decoder.update(false, false), -1);
+    AW_CHECK_EQ(decoder.update(true, false), 0);
+    AW_CHECK_EQ(decoder.update(true, true), 0);
+    AW_CHECK_EQ(decoder.update(false, true), 0);
+    AW_CHECK_EQ(decoder.update(false, false), 1);
+}
 
 // --- Keyboard mapping -------------------------------------------------------
 
@@ -34,6 +96,8 @@ AW_TEST(KeyMap, MapsTrackKeysInOrder) {
     AW_CHECK_EQ(desktop::mapKey('2').button, core::ButtonId::Track2);
     AW_CHECK_EQ(desktop::mapKey('3').button, core::ButtonId::Track3);
     AW_CHECK_EQ(desktop::mapKey('4').button, core::ButtonId::Track4);
+    AW_CHECK_EQ(desktop::mapKey('5').button, core::ButtonId::Track5);
+    AW_CHECK_EQ(desktop::mapKey('6').button, core::ButtonId::Track6);
 }
 
 AW_TEST(KeyMap, MapsEncoderToArrowKeys) {
@@ -78,16 +142,16 @@ AW_TEST(VirtualPanel, CentresTheCanvasAndLeavesAStrip) {
     AW_CHECK_EQ(strip.height, std::int16_t{80});
 }
 
-AW_TEST(VirtualPanel, ProvidesTwelveKeysCoveringTheStrip) {
+AW_TEST(VirtualPanel, ProvidesFourteenKeysCoveringTheStrip) {
     const desktop::VirtualPanelLayout layout{480, 320, 320, 240};
-    AW_REQUIRE(layout.keys().size() == 12);
+    AW_REQUIRE(layout.keys().size() == 14);
 
-    // Six columns of 80, two rows of 40.
-    AW_CHECK_EQ(layout.keys()[0].area.width, std::int16_t{80});
+    // Seven columns, two rows of 40.
+    AW_CHECK_EQ(layout.keys()[0].area.width, std::int16_t{68});
     AW_CHECK_EQ(layout.keys()[0].area.height, std::int16_t{40});
     AW_CHECK_EQ(layout.keys()[0].id, core::ButtonId::Play);
-    AW_CHECK_EQ(layout.keys()[6].id, core::ButtonId::Track1);
-    AW_CHECK_EQ(layout.keys()[6].area.y, std::int16_t{280});  // Second row.
+    AW_CHECK_EQ(layout.keys()[7].id, core::ButtonId::Track1);
+    AW_CHECK_EQ(layout.keys()[7].area.y, std::int16_t{280});  // Second row.
 }
 
 AW_TEST(VirtualPanel, HitTestsKeysInTheStrip) {
@@ -254,4 +318,211 @@ AW_TEST(CompositeButtons, WithNoSourcesFailsRatherThanPretending) {
     CompositeButtons composite;
     AW_CHECK_EQ(composite.sourceCount(), std::size_t{0});
     AW_CHECK(!composite.start().hasValue());
+}
+
+// --- Composite encoder ------------------------------------------------------
+
+namespace {
+
+class FakeEncoder final : public hal::EncoderInterface {
+public:
+    explicit FakeEncoder(bool startSucceeds) : startSucceeds_{startSucceeds} {}
+
+    void setListener(hal::EncoderListener* listener) noexcept override { listener_ = listener; }
+
+    core::Status start() override {
+        if (!startSucceeds_) {
+            return core::makeError(core::ErrorCode::NotImplemented, "fake");
+        }
+        started = true;
+        return core::success();
+    }
+    void stop() noexcept override { started = false; }
+
+    std::int32_t consumeDelta() noexcept override {
+        const std::int32_t d = pending_;
+        pending_ = 0;
+        return d;
+    }
+
+    void turn(std::int32_t delta) {
+        pending_ += delta;
+        if (listener_ != nullptr) {
+            listener_->onEncoderTurned(delta, 0);
+        }
+    }
+
+    bool started{false};
+
+private:
+    bool startSucceeds_;
+    hal::EncoderListener* listener_{nullptr};
+    std::int32_t pending_{0};
+};
+
+class RecordingEncoderListener final : public hal::EncoderListener {
+public:
+    void onEncoderTurned(std::int32_t delta, std::uint64_t) noexcept override { total += delta; }
+    std::int32_t total{0};
+};
+
+}  // namespace
+
+AW_TEST(CompositeEncoder, SumsMotionFromEverySource) {
+    auto gpio = std::make_unique<FakeEncoder>(true);
+    auto keys = std::make_unique<FakeEncoder>(true);
+    FakeEncoder* gpioPtr = gpio.get();
+    FakeEncoder* keysPtr = keys.get();
+
+    CompositeEncoder composite;
+    composite.addSource(std::move(gpio));
+    composite.addSource(std::move(keys));
+    AW_REQUIRE(static_cast<bool>(composite.start()));
+    AW_CHECK_EQ(composite.startedCount(), std::size_t{2});
+
+    gpioPtr->turn(3);
+    keysPtr->turn(-1);
+    AW_CHECK_EQ(composite.consumeDelta(), std::int32_t{2});
+    AW_CHECK_EQ(composite.consumeDelta(), std::int32_t{0});  // Drained.
+}
+
+AW_TEST(CompositeEncoder, ForwardsTheListenerToEverySource) {
+    auto gpio = std::make_unique<FakeEncoder>(true);
+    auto keys = std::make_unique<FakeEncoder>(true);
+    FakeEncoder* gpioPtr = gpio.get();
+    FakeEncoder* keysPtr = keys.get();
+
+    CompositeEncoder composite;
+    composite.addSource(std::move(gpio));
+    composite.addSource(std::move(keys));
+
+    RecordingEncoderListener listener;
+    composite.setListener(&listener);
+    AW_REQUIRE(static_cast<bool>(composite.start()));
+
+    gpioPtr->turn(2);
+    keysPtr->turn(2);
+    AW_CHECK_EQ(listener.total, std::int32_t{4});
+}
+
+AW_TEST(CompositeEncoder, SurvivesAStubSourceThatCannotStart) {
+    // The real prototype: the GPIO encoder is a Phase 6 stub, the keyboard works.
+    auto gpioStub = std::make_unique<FakeEncoder>(false);
+    auto keyboard = std::make_unique<FakeEncoder>(true);
+    FakeEncoder* keyboardPtr = keyboard.get();
+
+    CompositeEncoder composite;
+    composite.addSource(std::move(gpioStub));
+    composite.addSource(std::move(keyboard));
+
+    AW_REQUIRE(static_cast<bool>(composite.start()));
+    AW_CHECK_EQ(composite.startedCount(), std::size_t{1});
+    AW_CHECK(keyboardPtr->started);
+}
+
+AW_TEST(CompositeEncoder, FailsOnlyWhenNoSourceStarts) {
+    CompositeEncoder composite;
+    composite.addSource(std::make_unique<FakeEncoder>(false));
+    const auto status = composite.start();
+    AW_REQUIRE(!status.hasValue());
+    AW_CHECK_EQ(status.error().code(), core::ErrorCode::DeviceNotConnected);
+}
+
+namespace {
+
+class TestRenderCallback final : public hal::AudioRenderCallback {
+public:
+    void renderAudio(std::span<float>, core::FrameCount, core::ChannelCount) noexcept override {}
+};
+
+class FakeAudioBackend final : public hal::AudioOutputInterface {
+public:
+    explicit FakeAudioBackend(bool opens) : opens_{opens} {}
+
+    core::Status open(const core::AudioFormat& format,
+                      core::FrameCount frames,
+                      hal::AudioRenderCallback&) override {
+        ++openCalls;
+        format_ = format;
+        frames_ = frames;
+        return opens_ ? core::success()
+                      : core::Status{core::makeError(core::ErrorCode::DeviceNotConnected)};
+    }
+    core::Status start() override { running_ = true; return core::success(); }
+    void stop() noexcept override { running_ = false; }
+    void close() noexcept override { running_ = false; }
+    bool isRunning() const noexcept override { return running_; }
+    core::AudioFormat format() const noexcept override { return format_; }
+    core::FrameCount bufferFrames() const noexcept override { return frames_; }
+    core::FrameCount latencyFrames() const noexcept override { return frames_ * 2; }
+
+    int openCalls{0};
+    void setOpens(bool opens) noexcept { opens_ = opens; }
+
+private:
+    bool opens_{false};
+    bool running_{false};
+    core::AudioFormat format_{};
+    core::FrameCount frames_{0};
+};
+
+}  // namespace
+
+AW_TEST(FallbackAudioOutput, PrefersThePrimaryBackend) {
+    auto primary = std::make_unique<FakeAudioBackend>(true);
+    auto fallback = std::make_unique<FakeAudioBackend>(true);
+    FakeAudioBackend* primaryPtr = primary.get();
+    FakeAudioBackend* fallbackPtr = fallback.get();
+    FallbackAudioOutput output{std::move(primary), std::move(fallback)};
+    TestRenderCallback callback;
+
+    AW_REQUIRE(output.open(core::kNativeFormat, 256, callback));
+    AW_CHECK(!output.isUsingFallback());
+    AW_CHECK_EQ(primaryPtr->openCalls, 1);
+    AW_CHECK_EQ(fallbackPtr->openCalls, 0);
+}
+
+AW_TEST(FallbackAudioOutput, UsesSilentBackendWhenPrimaryCannotOpen) {
+    auto primary = std::make_unique<FakeAudioBackend>(false);
+    auto fallback = std::make_unique<FakeAudioBackend>(true);
+    FakeAudioBackend* fallbackPtr = fallback.get();
+    FallbackAudioOutput output{std::move(primary), std::move(fallback)};
+    TestRenderCallback callback;
+
+    AW_REQUIRE(output.open(core::kNativeFormat, 256, callback));
+    AW_CHECK(output.isUsingFallback());
+    AW_CHECK_EQ(fallbackPtr->openCalls, 1);
+    AW_REQUIRE(output.start());
+    AW_CHECK(output.isRunning());
+}
+
+AW_TEST(FallbackAudioOutput, ReconnectsPrimaryAfterStartingSilent) {
+    auto primary = std::make_unique<FakeAudioBackend>(false);
+    auto fallback = std::make_unique<FakeAudioBackend>(true);
+    FakeAudioBackend* primaryPtr = primary.get();
+    FallbackAudioOutput output{std::move(primary), std::move(fallback)};
+    TestRenderCallback callback;
+
+    AW_REQUIRE(output.open(core::kNativeFormat, 256, callback));
+    AW_REQUIRE(output.start());
+    AW_CHECK(output.isUsingFallback());
+
+    primaryPtr->setOpens(true);
+    AW_REQUIRE(output.refresh());
+    AW_CHECK(!output.isUsingFallback());
+    AW_CHECK(output.isRunning());
+    AW_CHECK_EQ(primaryPtr->openCalls, 2);
+}
+
+AW_TEST(AlsaPcm, PacksNormalizedFloatAsSigned24LittleEndian) {
+    std::array<std::byte, 3> packed{};
+    rpi::packS24_3LE(-1.0F, packed);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[0]), 0U);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[1]), 0U);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[2]), 128U);
+
+    rpi::packS24_3LE(1.0F, packed);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[0]), 255U);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[1]), 255U);
+    AW_CHECK_EQ(std::to_integer<unsigned int>(packed[2]), 127U);
 }

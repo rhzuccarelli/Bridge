@@ -251,7 +251,7 @@ The Pi 5 compiles the whole project in well under a minute.
 
 ---
 
-## Step 9 — Run it (no screen yet)
+## Step 9 — Run it in the terminal
 
 You haven't wired the OLED yet — that's next — so run it in your SSH window, which
 needs no hardware at all:
@@ -267,15 +267,14 @@ you can drive everything from your Mac's keyboard:
 
 | Key | | Key | |
 | --- | --- | --- | --- |
-| `space` | Play | `1`–`4` | Track 1–4 |
+| `space` | Play | `1`–`6` | Track 1–6 |
 | `s` | Stop | `Enter` | Encoder push |
 | `r` | Record | `←` `→` `↑` `↓` | Encoder turn |
 | `i` / `e` | Import / Export | `b` or `Esc` | Back |
 | `u` / `w` | Undo / Save | `q` | Quit |
 
-> The screens are intentionally blank: drawing them is Phase 7. What you're
-> confirming now is that the input and audio plumbing work. In your terminal you'll
-> see a dark rectangle — that's the (empty) 320×240 canvas being previewed.
+The terminal preview renders the same interface as the hardware display. This is a
+useful first check for the Home, Projects, Tracks, Playback and Settings screens.
 
 Press `q` to quit. Now let's give it a real screen.
 
@@ -398,9 +397,17 @@ Add the options you noted, if any:
 AW_OLED_CHIP=sh1106 AW_OLED_ROTATE=180 ./scripts/run-pi.sh --oled
 ```
 
-**✅ Check:** the log says `development platform ready: OLED 128x64 ...`. The screen
-will be mostly blank — the real screens are Phase 7 — but the display path is now
-proven end to end on hardware.
+**✅ Check:** the log says `development platform ready: OLED 128x64 ...` and the OLED
+shows the Home screen with readable text and a highlighted `PROJECTS` row.
+
+For the TP-7 monitoring path used by this prototype, launch with its ALSA card too:
+
+```bash
+AW_ALSA_DEVICE=hw:2,0 ./scripts/run-pi.sh --oled
+```
+
+In Tracks, a short encoder-push cycles `GAIN`, `PAN`, and `POS`. Track keys `1`–`6`
+select the six stereo lanes directly; there is no bank mode.
 
 ---
 
@@ -455,11 +462,7 @@ Makes the Pi behave like an appliance: power on, the app is running.
 🍓 **On the Pi:**
 
 ```bash
-sudo cp scripts/audio-workstation.service /etc/systemd/system/
-sudo sed -i "s/%USER%/$USER/g; s|%DIR%|$HOME/audio-workstation|g" \
-    /etc/systemd/system/audio-workstation.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now audio-workstation
+./scripts/install-autostart.sh
 ```
 
 Watch the log:
@@ -561,12 +564,7 @@ Reflash the microSD card from Step 1. Nothing here is precious.
 
 ## What is next
 
-Phase 1 is plumbing: the display, input, event and audio paths all work end to end,
-but the screens are deliberately blank and no audio is produced yet.
-
-- **Phase 2** adds WAV reading and writing.
-- **Phase 5** makes the audio actually come out of the headphone socket.
-- **Phase 6** brings the encoder to life.
-- **Phase 7** draws the interface.
+Phases 1–7 are complete. Phase 8 adds explicit TP-7 MTP browsing and transfers; its
+real-device acceptance procedure is in [phase8-tp7-test.md](phase8-tp7-test.md).
 
 See [roadmap.md](roadmap.md).

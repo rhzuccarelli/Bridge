@@ -7,8 +7,14 @@
 #include "aw/display/Framebuffer.hpp"
 #include "aw/display/Painter.hpp"
 #include "aw/events/EventBus.hpp"
+#include "aw/hal/DeviceModeInterface.hpp"
 #include "aw/project/ProjectManager.hpp"
+#include "aw/project/ImportService.hpp"
+#include "aw/project/ExportService.hpp"
+#include "aw/mtp/MtpManager.hpp"
+#include "aw/mtp/MtpBrowser.hpp"
 #include "aw/ui/Navigator.hpp"
+#include "aw/ui/TaskRunner.hpp"
 
 namespace aw::ui {
 
@@ -29,7 +35,14 @@ public:
                  display::DisplayFlusher& flusher,
                  events::EventBus& bus,
                  project::ProjectManager& projects,
-                 audio::AudioEngine& engine);
+                 audio::AudioEngine& engine,
+                 mtp::MtpManager* mtpManager = nullptr,
+                 mtp::MtpBrowser* mtpBrowser = nullptr,
+                 project::ImportService* importer = nullptr,
+                 project::ExportService* exporter = nullptr,
+                 TaskRunner* tasks = nullptr,
+                 events::EventQueue* workerQueue = nullptr,
+                 hal::DeviceModeInterface* deviceMode = nullptr);
     ~UiController();
 
     UiController(const UiController&) = delete;
@@ -57,10 +70,18 @@ private:
     events::EventBus& bus_;
     project::ProjectManager& projects_;
     audio::AudioEngine& engine_;
+    mtp::MtpManager* mtpManager_;
+    mtp::MtpBrowser* mtpBrowser_;
+    project::ImportService* importer_;
+    project::ExportService* exporter_;
+    TaskRunner* tasks_;
+    events::EventQueue* workerQueue_;
+    hal::DeviceModeInterface* deviceMode_;
 
     Navigator navigator_;
     display::Painter painter_;
     events::SubscriptionId subscription_{events::kInvalidSubscription};
+    bool encoderPushWasLong_{false};
 };
 
 }  // namespace aw::ui

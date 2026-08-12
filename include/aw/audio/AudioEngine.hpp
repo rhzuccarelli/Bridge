@@ -30,10 +30,15 @@ struct EngineTrack {
     core::TrackId id{core::kInvalidTrackId};
     core::Path audioFile;      ///< Absolute path to a local WAV. Never an MTP object.
     core::FrameIndex startFrame{0};  ///< Where the file begins on the timeline.
+    core::FrameRange sourceRange{};  ///< Which part of the file this clip plays.
     float gain{1.0F};
     float pan{0.0F};
     bool muted{false};
     bool soloed{false};
+    core::ChannelCount sourceChannel{0};  ///< Zero-based first source channel.
+    core::ChannelCount sourceChannelCount{2};  ///< Mono (1) or stereo pair (2).
+    core::ChannelCount destinationChannel{0};  ///< 0 = L, 1 = R.
+    core::ChannelCount destinationChannelCount{2};
 };
 
 struct EngineScene {
@@ -50,7 +55,7 @@ struct EngineScene {
 /// depends on it:
 ///
 ///   audio thread      - `renderAudio()`. No allocation, no locks, no I/O.
-///   streaming thread  - reads WAV data ahead into per-track ring buffers.
+///   streaming thread  - reads WAV data ahead into per-source ring buffers.
 ///   control thread    - the main loop. Calls `setScene`, transport methods.
 ///
 /// The engine posts `TransportEvent`, `PositionEvent` and `LevelEvent` into an
@@ -69,6 +74,7 @@ public:
     [[nodiscard]] core::Status start(core::FrameCount bufferFrames);
     void stop() noexcept;
     [[nodiscard]] bool isRunning() const noexcept;
+    [[nodiscard]] core::Status refreshOutput() { return output_.refresh(); }
 
     /// Replaces what is playing.  Safe to call while running; takes effect at
     /// the next block boundary.  Blocking (it opens files), so control thread only.

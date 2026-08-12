@@ -5,6 +5,7 @@
 ## writes WAV files.  The arrow never points back: aw_audio does not link this.
 ##
 add_library(aw_project STATIC
+    CopyChannelCommand.cpp
     ExportService.cpp
     ImportService.cpp
     Project.cpp

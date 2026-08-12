@@ -10,9 +10,10 @@ namespace aw::platform::rpi {
 ///
 /// Design notes, decided now so the interface above does not have to change
 /// later:
-///  - Opens the PCM in `S24_3LE` at 48 kHz stereo, matching `kNativeFormat`, so
-///    there is no rate or format conversion anywhere in the chain.  If the
-///    device cannot do it, opening fails loudly rather than silently resampling.
+///  - Prefers `S24_3LE` at 48 kHz stereo, matching `kNativeFormat` exactly.
+///    When the PCM instead exposes the TP-7's fixed 96 kHz six-channel USB
+///    endpoint, the backend performs an explicit 2x monitor conversion and maps
+///    stereo to FL/FR. The portable engine and stored project remain at 48 kHz.
 ///  - Runs its own thread at `SCHED_FIFO` and calls the render callback from
 ///    there, converting float to packed 24 bit on the way out.  ALSA's blocking
 ///    write model becomes the pull model the portable side expects.

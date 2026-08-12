@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "aw/audio/AudioEngine.hpp"
 #include "aw/project/ProjectManager.hpp"
 #include "aw/ui/DirtyFlag.hpp"
@@ -7,18 +9,11 @@
 
 namespace aw::ui {
 
-/// The main editing view: four track lanes with waveform overviews and meters.
-///
-/// The four physical track buttons select the focused track directly - no
-/// scrolling to reach a track, ever.  The encoder then adjusts whatever the
-/// current parameter mode is (gain / pan / position), and encoder push cycles
-/// that mode.  One knob, one button, no menu: this is the interaction pattern
-/// the whole UI is built on.
+/// The main editing view: six synchronized stereo tracks with waveform overviews and
+/// meters. The encoder moves directly among the six lanes; there are no hidden
+/// gain/pan/position modes in the one-knob interface.
 class TrackViewScreen final : public Screen {
 public:
-    /// What the encoder currently edits on the focused track.
-    enum class ParameterMode : std::uint8_t { Gain, Pan, Position };
-
     TrackViewScreen(project::ProjectManager& projects, audio::AudioEngine& engine) noexcept;
 
     [[nodiscard]] ScreenId id() const noexcept override { return ScreenId::TrackView; }
@@ -29,15 +24,14 @@ public:
     [[nodiscard]] bool isDirty() const noexcept override { return dirty_.isSet(); }
     void render(display::Painter& painter) override;
 
-    [[nodiscard]] core::TrackId focusedTrack() const noexcept { return focusedTrack_; }
-    [[nodiscard]] ParameterMode parameterMode() const noexcept { return mode_; }
+    [[nodiscard]] core::TrackId focusedTrack() const noexcept;
 
 private:
     project::ProjectManager& projects_;
     audio::AudioEngine& engine_;
     DirtyFlag dirty_;
-    core::TrackId focusedTrack_{core::kInvalidTrackId};
-    ParameterMode mode_{ParameterMode::Gain};
+    std::size_t focusedIndex_{0};
+    std::array<float, project::kTrackCount> levels_{};
 };
 
 }  // namespace aw::ui

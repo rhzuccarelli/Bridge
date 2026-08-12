@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "aw/audio/AudioBuffer.hpp"
+#include "aw/audio/WavMetadata.hpp"
 #include "aw/core/AudioFormat.hpp"
 #include "aw/core/Result.hpp"
 #include "aw/core/Types.hpp"
@@ -34,7 +35,8 @@ public:
     /// Creates (or truncates) `path` and writes a provisional header.
     [[nodiscard]] core::Status create(hal::StorageInterface& storage,
                                       const core::Path& path,
-                                      const core::AudioFormat& format);
+                                      const core::AudioFormat& format,
+                                      const std::optional<AcidMetadata>& acid = std::nullopt);
 
     /// Appends `source.frameCount()` frames, converting from float.
     [[nodiscard]] core::Status write(const AudioBuffer& source);

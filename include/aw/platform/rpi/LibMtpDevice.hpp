@@ -6,7 +6,7 @@
 
 namespace aw::platform::rpi {
 
-/// MTP initiator backed by libmtp.  (Phase 8.)
+/// MTP initiator backed by libmtp.
 ///
 /// Why libmtp rather than writing PTP/MTP over libusb by hand: MTP has enough
 /// device-specific quirks that a mature implementation is worth the dependency

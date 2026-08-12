@@ -2,6 +2,9 @@
 #include "aw/display/Painter.hpp"
 #include "framework/Test.hpp"
 
+#include <algorithm>
+#include <array>
+
 using namespace aw;
 
 AW_TEST(Framebuffer, StartsFullyDamaged) {
@@ -90,6 +93,57 @@ AW_TEST(Painter, ClipsRectanglesThatCrossTheEdge) {
     const std::span<const display::Color> pixels = framebuffer.pixels();
     AW_CHECK_EQ(pixels[0], display::Color{0x00FF});
     AW_CHECK_EQ(pixels[15 * 16 + 15], display::Color{0x00FF});
+}
+
+AW_TEST(Painter, IgnoresRectanglesFullyOutsideTheFramebuffer) {
+    display::Framebuffer framebuffer{16, 16};
+    framebuffer.fill(0x0000);
+    framebuffer.clearDamage();
+    display::Painter painter{framebuffer};
+
+    painter.fillRect(hal::Rect{-4, 2, 1, 1}, 0xFFFF);
+    painter.fillRect(hal::Rect{20, 2, 1, 1}, 0xFFFF);
+    painter.fillRect(hal::Rect{2, -4, 1, 1}, 0xFFFF);
+    painter.fillRect(hal::Rect{2, 20, 1, 1}, 0xFFFF);
+
+    AW_CHECK(!framebuffer.hasDamage());
+    AW_CHECK(std::all_of(framebuffer.pixels().begin(), framebuffer.pixels().end(),
+                         [](display::Color pixel) { return pixel == 0x0000; }));
+}
+
+AW_TEST(Painter, ClipsCenteredTextWiderThanFramebuffer) {
+    display::Framebuffer framebuffer{128, 64};
+    framebuffer.fill(display::palette::kBackground);
+    framebuffer.clearDamage();
+    display::Painter painter{framebuffer};
+
+    painter.drawTextIn(hal::Rect{0, 38, 128, 12}, "TP-7 RECONNECTING", display::smallFont(),
+                       display::palette::kTextDim, display::TextAlign::Center);
+
+    AW_CHECK(framebuffer.hasDamage());
+    AW_CHECK(std::any_of(framebuffer.pixels().begin(), framebuffer.pixels().end(),
+                         [](display::Color pixel) { return pixel == display::palette::kTextDim; }));
+}
+
+AW_TEST(Painter, BitmapTextDrawsVisiblePixels) {
+    display::Framebuffer framebuffer{32, 16};
+    framebuffer.fill(display::palette::kBackground);
+    display::Painter painter{framebuffer};
+    const auto width = painter.drawText(1, 1, "A1", display::smallFont(), display::palette::kText);
+    AW_CHECK_EQ(width, std::int16_t{16});
+    AW_CHECK(std::any_of(framebuffer.pixels().begin(), framebuffer.pixels().end(),
+                         [](display::Color pixel) { return pixel == display::palette::kText; }));
+}
+
+AW_TEST(Painter, WaveformAndMeterDrawInsideTheirAreas) {
+    display::Framebuffer framebuffer{32, 16};
+    framebuffer.fill(display::palette::kBackground);
+    display::Painter painter{framebuffer};
+    const std::array<std::pair<float, float>, 2> peaks{{{-1.0F, 1.0F}, {-0.5F, 0.5F}}};
+    painter.drawWaveform({0, 0, 16, 16}, peaks, display::palette::kWaveform);
+    painter.drawMeter({18, 4, 14, 6}, 0.5F, false);
+    AW_CHECK_EQ(framebuffer.pixels()[0], display::palette::kWaveform);
+    AW_CHECK_EQ(framebuffer.pixels()[5 * 32 + 19], display::palette::kMeterOk);
 }
 
 AW_TEST(Color, PacksIntoRgb565) {

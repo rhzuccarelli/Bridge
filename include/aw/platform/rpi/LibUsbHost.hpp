@@ -6,7 +6,7 @@
 
 namespace aw::platform::rpi {
 
-/// USB host enumeration and hotplug via libusb.  (Phase 8.)
+/// USB host enumeration and hotplug via libusb.
 ///
 /// Runs libusb's event loop on its own thread and reports attach/detach through
 /// the listener.  MTP capability is decided here by looking at the interface

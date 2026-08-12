@@ -10,10 +10,8 @@ namespace aw::project {
 
 /// One track of the multitrack timeline.
 ///
-/// Four tracks is the device's fixed configuration (four track buttons on the
-/// front panel), but nothing here hard-codes that number - the constant lives
-/// in `Timeline`, so a future eight-track revision is a constant change rather
-/// than a data model change.
+/// Six synchronized stereo tracks is the device's fixed configuration, but nothing
+/// here hard-codes that number - the invariant lives in `Timeline`.
 struct Track {
     core::TrackId id{core::kInvalidTrackId};
     std::string name;                 ///< "Track01" by default; user renameable.

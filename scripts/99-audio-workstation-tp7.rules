@@ -1,0 +1,2 @@
+# Teenage Engineering TP-7 in MTP mode.
+SUBSYSTEM=="usb", ATTR{idVendor}=="2367", ATTR{idProduct}=="0019", MODE="0660", GROUP="plugdev", TAG+="uaccess"

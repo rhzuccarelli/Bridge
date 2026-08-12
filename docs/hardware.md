@@ -8,8 +8,8 @@ The bench prototype, and how the software talks to each piece.
 | **SPI OLED, 128×64 mono (SSD1306/SH1106)** | SPI + 2 GPIO | `Ssd1306Display` + `SpiOledBus` |
 | KY-040 rotary encoder with push switch | GPIO | `GpioEncoder` + `GpioButtons` *(Phase 6)* |
 | microSD | — | `PosixStorage` |
-| USB audio interface or codec | USB / I²S | `AlsaAudioOutput` *(Phase 5)* |
-| Teenage Engineering TP-7 | USB (MTP) | `LibUsbHost` + `LibMtpDevice` *(Phase 8)* |
+| USB audio interface or codec | USB / I²S | `AlsaAudioOutput`: 48 kHz, S24_3LE, stereo |
+| Teenage Engineering TP-7 | USB (MTP) | `LibUsbHost` + `LibMtpDevice` |
 | *(alternative)* 3.5" HDMI LCD, 480×320, XPT2046 touch | HDMI + SPI touch | `FramebufferDisplay` + `EvdevTouch` |
 
 > **Two display options, one reason to prefer the OLED on the prototype.** The
@@ -285,7 +285,7 @@ behind the RP1 southbridge, exposed as `gpiochip4` by older Bookworm kernels and
 `gpiochip0` by newer ones. Run `gpiodetect` and use whichever reports **54 lines**;
 override the default with `AW_GPIO_CHIP=gpiochipN`.
 
-### Notes for the Phase 6 implementation
+### Phase 6 behavior
 
 - The power line must be requested as an output and driven high **before** the
   encoder lines are read, and the request held open — releasing it drops the
@@ -298,6 +298,20 @@ override the default with `AW_GPIO_CHIP=gpiochipN`.
   so one physical click always moves the UI by exactly one row.
 - `SW` is active-low and is reported as `core::ButtonId::EncoderPush`, i.e. it
   arrives as a *button*, not as part of the encoder interface.
+
+Run the focused diagnostic on the Pi with:
+
+```bash
+AW_GPIO_CHIP=gpiochip0 ./build/src/platform/aw-gpio-test
+```
+
+It prints one `encoder +1` or `encoder -1` per detent plus debounced push,
+release, long-press and repeat events. Substitute the 54-line chip reported by
+`gpiodetect` when it is not `gpiochip0`.
+
+Verified on the Raspberry Pi 5 prototype with `pinctrl-rp1` exposed as
+`gpiochip0`: GPIO17/27 reported both turn directions and GPIO22 produced clean
+press, release, long-press and repeat events.
 
 ---
 
@@ -329,7 +343,7 @@ Works over SSH or on a laptop, and is the fastest way to drive the UI:
 
 | Key | Control | Key | Control |
 | --- | --- | --- | --- |
-| `space` | Play | `1`–`4` | Track 1–4 |
+| `space` | Play | `1`–`6` | Track 1–6 |
 | `s` | Stop | `Enter` | Encoder push |
 | `r` | Record | `←` `→` | Encoder turn |
 | `i` | Import | `↑` `↓` | Encoder turn |

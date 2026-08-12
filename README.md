@@ -1,6 +1,6 @@
 # Audio Workstation
 
-A standalone hardware multitrack recorder/editor. Not a DAW — a dedicated device with
+A standalone TP-7 companion for multitrack editing. Not a DAW — a dedicated device with
 physical controls, a small screen, instant boot, and a fast workflow, in the spirit of
 the Tascam Portastudio and the Zoom R-series.
 
@@ -16,10 +16,15 @@ only `src/platform/` changes when the port happens.
 
 ## Status
 
-**Phase 1 complete: structure, architecture and placeholders.** The tree builds, the
-application runs against a simulator backend, and 59 unit tests pass. The audio, WAV,
-project, MTP and display *implementations* are Phase 2–8 work; their stubs return
-`NotImplemented` so a half-wired build fails loudly rather than silently doing nothing.
+**Phases 1–8 complete.** The portable architecture, Raspberry Pi prototype I/O,
+streaming WAV layer, project manager, non-destructive model, and realtime multitrack
+playback engine are implemented. Playback uses bounded local-storage buffers; the TP-7
+is exclusively an explicit MTP import/export endpoint and is never a live audio source.
+Each deck contains six synchronized stereo-capable tracks. Exactly one deck is active
+for playback; the others are source libraries. A TP-7 WAV may contain from one mono
+channel through six stereo pairs (twelve interleaved channels), and clips reference a
+pair without duplicating the imported file. All routes over the same placement share
+one file reader and one bounded multichannel stream.
 
 ## Quick start
 
@@ -38,6 +43,18 @@ AW_PROJECTS_ROOT=./projects ./build/src/app/audio-workstation
 
 No third-party dependencies in Phase 1. See [docs/build.md](docs/build.md) for the
 options.
+
+### Raspberry Pi service
+
+When Bridge is installed to start automatically at boot, use these commands to check
+its status, follow its logs, restart it, or stop it before running the program manually:
+
+```bash
+systemctl status audio-workstation
+journalctl -u audio-workstation -f
+sudo systemctl restart audio-workstation
+sudo systemctl stop audio-workstation
+```
 
 ## Layout
 

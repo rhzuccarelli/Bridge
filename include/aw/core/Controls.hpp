@@ -24,6 +24,8 @@ enum class ButtonId : std::uint8_t {
     Track2,
     Track3,
     Track4,
+    Track5,
+    Track6,
     EncoderPush,
 
     Count  ///< Sentinel; also the size of any per-button array.

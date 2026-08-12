@@ -15,7 +15,7 @@ namespace aw::project {
 /// Bumped whenever the on-disk shape changes.  The loader accepts anything it
 /// knows how to migrate and refuses anything newer, with a clear message, rather
 /// than half-reading a future format and silently losing the user's edits.
-inline constexpr std::uint32_t kMetadataSchemaVersion = 1;
+inline constexpr std::uint32_t kMetadataSchemaVersion = 2;
 
 /// Reads and writes `metadata.json`.
 ///

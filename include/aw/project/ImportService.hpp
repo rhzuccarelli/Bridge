@@ -32,7 +32,7 @@ struct ImportPlan {
 
 /// Copies selected recordings off the TP-7 into the open project.
 ///
-/// Phase 8 implements this.  The rules it encodes are product decisions, not
+/// The rules this service encodes are product decisions, not
 /// implementation details, so they are written down here now:
 ///
 ///  - Nothing is ever imported automatically.  A device appearing produces a

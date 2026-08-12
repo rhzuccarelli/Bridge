@@ -36,6 +36,8 @@ KeyMapping mapKey(int key) noexcept {
         case '2': return KeyMapping{KeyAction::Button, core::ButtonId::Track2};
         case '3': return KeyMapping{KeyAction::Button, core::ButtonId::Track3};
         case '4': return KeyMapping{KeyAction::Button, core::ButtonId::Track4};
+        case '5': return KeyMapping{KeyAction::Button, core::ButtonId::Track5};
+        case '6': return KeyMapping{KeyAction::Button, core::ButtonId::Track6};
 
         case kKeyEnter: return KeyMapping{KeyAction::Button, core::ButtonId::EncoderPush};
 

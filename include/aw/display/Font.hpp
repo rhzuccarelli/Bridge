@@ -39,7 +39,7 @@ struct Font {
 
 /// The two fonts the UI uses.  Phase 7 fills in the glyph data (generated into
 /// `assets/fonts` and compiled in - the device must boot with no file reads).
-[[nodiscard]] const Font& smallFont() noexcept;  ///< ~6x10, list rows.
-[[nodiscard]] const Font& largeFont() noexcept;  ///< ~12x20, timecode.
+[[nodiscard]] const Font& smallFont() noexcept;  ///< 8x12, OLED labels and lists.
+[[nodiscard]] const Font& largeFont() noexcept;  ///< 12x16, timecode.
 
 }  // namespace aw::display

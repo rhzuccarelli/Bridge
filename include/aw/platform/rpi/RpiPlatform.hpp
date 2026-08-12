@@ -13,7 +13,8 @@ namespace aw::platform::rpi {
 /// Everything the Pi build needs to know about its own hardware.
 struct RpiConfig {
     core::Path projectsRoot{"/var/lib/audio-workstation/projects"};
-    std::string alsaDevice{"hw:0,0"};
+    std::string alsaDevice{"hw:TP7,0"};
+    std::string midiDevice{"hw:TP7,0,0"};
     GpioPinMap pins{GpioPinMap::prototype()};
     SpiDisplayConfig display{};
 };

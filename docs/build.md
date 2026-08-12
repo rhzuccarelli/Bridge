@@ -6,9 +6,8 @@
 - A C++20 compiler (GCC 12+ or Clang 15+)
 - Ninja (optional, but assumed below)
 
-Phase 1 has **no third-party dependencies**. The Raspberry Pi backend will need
-`libasound2-dev`, `libgpiod-dev`, `libusb-1.0-0-dev` and `libmtp-dev` from Phase 5
-onwards; the build reports which are missing and keeps using stubs until then.
+The portable build has no third-party dependencies. The Raspberry Pi backend requires
+`libasound2-dev`, `libgpiod-dev`, `libusb-1.0-0-dev` and `libmtp-dev`.
 
 ## Development build (any machine)
 
@@ -60,9 +59,32 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DAW_PLATFORM=rpi
 cmake --build build
 ```
 
-Selects the `rpi` backend. As of Phase 1 the drivers are stubs that return
-`NotImplemented`, so the binary builds and runs but produces no sound and drives no
-panel. Phases 5–8 fill them in.
+Selects the `rpi` backend and requires `libasound2-dev`. The TP-7 defaults are
+`AW_ALSA_DEVICE=hw:TP7,0` and `AW_MIDI_DEVICE=hw:TP7,0,0`; either can be overridden
+for bench hardware:
+
+```bash
+aplay -l
+AW_ALSA_DEVICE=hw:2,0 ./scripts/run-pi.sh --oled
+```
+
+Opening Import sends the TP-7's MTP-mode SysEx through the raw-MIDI device. After an
+import (or when leaving Import), Bridge releases the libmtp session and the TP-7
+automatically re-enumerates as USB audio. Export does not initiate a mode change.
+
+The backend prefers `S24_3LE`, 48 kHz stereo. It also recognizes the TP-7's native
+`S24_3LE`, 96 kHz, six-channel playback endpoint: Bridge explicitly upsamples the
+48 kHz stereo monitor bus by two, maps it to FL/FR, and silences FC/LFE/RL/RR. This
+conversion affects monitoring only; project files and MTP exports stay at 48 kHz.
+If neither format can be opened, Bridge logs the error and uses the silent wall-clock
+fallback.
+
+Hardware bring-up plays distinct left/right tones for five seconds and fails if an xrun
+occurs:
+
+```bash
+AW_ALSA_DEVICE=hw:2,0 ./build/src/platform/aw-alsa-test
+```
 
 ## Strict build
 

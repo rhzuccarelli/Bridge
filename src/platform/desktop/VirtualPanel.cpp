@@ -7,22 +7,24 @@ namespace {
 
 /// Two rows of six, in the order they would sit on a front panel: transport and
 /// edit actions on top, track selection and transfer below.
-constexpr std::array<std::pair<core::ButtonId, std::string_view>, 12> kKeyOrder{{
+constexpr std::array<std::pair<core::ButtonId, std::string_view>, 14> kKeyOrder{{
     {core::ButtonId::Play, "PLAY"},
     {core::ButtonId::Stop, "STOP"},
     {core::ButtonId::Record, "REC"},
     {core::ButtonId::Undo, "UNDO"},
     {core::ButtonId::Save, "SAVE"},
     {core::ButtonId::Back, "BACK"},
+    {core::ButtonId::Import, "IMP"},
     {core::ButtonId::Track1, "TR1"},
     {core::ButtonId::Track2, "TR2"},
     {core::ButtonId::Track3, "TR3"},
     {core::ButtonId::Track4, "TR4"},
-    {core::ButtonId::Import, "IMP"},
+    {core::ButtonId::Track5, "TR5"},
+    {core::ButtonId::Track6, "TR6"},
     {core::ButtonId::Export, "EXP"},
 }};
 
-constexpr int kColumns = 6;
+constexpr int kColumns = 7;
 constexpr int kRows = 2;
 constexpr std::int16_t kMinimumRowHeight = 24;
 

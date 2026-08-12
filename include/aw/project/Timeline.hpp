@@ -8,8 +8,9 @@
 
 namespace aw::project {
 
-/// The device's fixed track count, matching the four front panel track buttons.
-inline constexpr std::size_t kTrackCount = 4;
+/// The device's fixed synchronized stereo-track count. This is a product invariant,
+/// independent of how the smaller set of physical buttons is banked in the UI.
+inline constexpr std::size_t kTrackCount = 6;
 
 /// All tracks plus the arrangement-wide settings.
 ///
