@@ -44,6 +44,18 @@ AW_PROJECTS_ROOT=./projects ./build/src/app/audio-workstation
 No third-party dependencies in Phase 1. See [docs/build.md](docs/build.md) for the
 options.
 
+### Raspberry Pi service
+
+When Bridge is installed to start automatically at boot, use these commands to check
+its status, follow its logs, restart it, or stop it before running the program manually:
+
+```bash
+systemctl status audio-workstation
+journalctl -u audio-workstation -f
+sudo systemctl restart audio-workstation
+sudo systemctl stop audio-workstation
+```
+
 ## Layout
 
 ```
