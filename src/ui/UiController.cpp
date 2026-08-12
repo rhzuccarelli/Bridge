@@ -87,7 +87,8 @@ core::Status UiController::initialise() {
         navigator_.registerScreen(std::make_unique<ImportScreen>(
             *mtpManager_, *mtpBrowser_, *importer_, *tasks_, *workerQueue_, deviceMode_));
         navigator_.registerScreen(std::make_unique<ExportScreen>(
-            *mtpManager_, *mtpBrowser_, projects_, *exporter_, *tasks_, *workerQueue_));
+            *mtpManager_, *mtpBrowser_, projects_, *exporter_, *tasks_, *workerQueue_,
+            deviceMode_));
     } else {
         navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Import, "IMPORT"));
         navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Export, "EXPORT"));

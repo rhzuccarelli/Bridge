@@ -11,16 +11,55 @@ namespace aw::ui {
 ExportScreen::ExportScreen(mtp::MtpManager& manager, mtp::MtpBrowser& browser,
                            project::ProjectManager& projects,
                            project::ExportService& exporter, TaskRunner& tasks,
-                           events::EventQueue& workerQueue) noexcept
+                           events::EventQueue& workerQueue,
+                           hal::DeviceModeInterface* deviceMode) noexcept
     : manager_{manager}, browser_{browser}, projects_{projects}, exporter_{exporter}, tasks_{tasks},
-      workerQueue_{workerQueue} {}
+      workerQueue_{workerQueue}, deviceMode_{deviceMode} {}
 
 void ExportScreen::onEnter() {
-    stage_ = Stage::Connecting; selection_ = 0; progressPercent_ = 0;
+    selection_ = 0; progressPercent_ = 0; waitingMillis_ = 0;
     lastError_ = core::ErrorCode::Unknown; storageId_.store(0, std::memory_order_release);
     folderId_.store(hal::kMtpRootHandle, std::memory_order_release);
+    if (manager_.state() == mtp::ConnectionState::Detected ||
+        manager_.state() == mtp::ConnectionState::Connected) {
+        startScan();
+    } else {
+        requestMtpMode();
+    }
+    dirty_.set();
+}
+
+void ExportScreen::onExit() {
+    if (stage_ != Stage::Transferring && manager_.state() == mtp::ConnectionState::Connected) {
+        (void)tasks_.submit([this] { manager_.disconnect(); });
+    }
+}
+
+void ExportScreen::requestMtpMode() {
+    if (deviceMode_ == nullptr) {
+        stage_ = Stage::Selecting;
+        lastError_ = core::ErrorCode::DeviceNotConnected;
+        return;
+    }
+    stage_ = Stage::SwitchingMode;
+    const std::uint32_t modeId = ++jobId_;
+    const core::Status accepted = tasks_.submit([this, modeId] {
+        const core::Status result = deviceMode_->requestMtpMode();
+        workerQueue_.post(events::JobFinishedEvent{
+            events::JobKind::DeviceMode, modeId, static_cast<bool>(result),
+            result ? core::ErrorCode::Unknown : result.error().code()});
+    });
+    if (!accepted) {
+        stage_ = Stage::Selecting;
+        lastError_ = accepted.error().code();
+    }
+}
+
+void ExportScreen::startScan() {
+    if (stage_ == Stage::Connecting) return;
+    stage_ = Stage::Connecting;
     const std::uint32_t scanId = ++jobId_;
-    (void)tasks_.submit([this, scanId] {
+    const core::Status accepted = tasks_.submit([this, scanId] {
         core::Status result = manager_.connect();
         if (result) {
             auto storages = manager_.storages();
@@ -46,10 +85,20 @@ void ExportScreen::onEnter() {
         workerQueue_.post(events::JobFinishedEvent{events::JobKind::Scan, scanId,
             static_cast<bool>(result), result ? core::ErrorCode::Unknown : result.error().code()});
     });
-    dirty_.set();
+    if (!accepted) {
+        stage_ = Stage::Selecting;
+        lastError_ = accepted.error().code();
+    }
 }
 
 NavigationRequest ExportScreen::handleEvent(const events::Event& event) {
+    if (const auto* device = std::get_if<events::DeviceEvent>(&event)) {
+        if (device->kind == events::DeviceKind::Mtp && device->attached) {
+            startScan();
+            dirty_.set();
+            return NavigationRequest::none();
+        }
+    }
     if (const auto* progress = std::get_if<events::JobProgressEvent>(&event)) {
         if (progress->kind == events::JobKind::Export) {
             if (stage_ == Stage::Checking) stage_ = Stage::Transferring;
@@ -57,6 +106,13 @@ NavigationRequest ExportScreen::handleEvent(const events::Event& event) {
         }
     }
     if (const auto* finished = std::get_if<events::JobFinishedEvent>(&event)) {
+        if (finished->kind == events::JobKind::DeviceMode && finished->jobId == jobId_) {
+            stage_ = finished->succeeded ? Stage::WaitingForMtp : Stage::Selecting;
+            waitingMillis_ = 0;
+            lastError_ = finished->succeeded ? core::ErrorCode::Unknown : finished->error;
+            dirty_.set();
+            return NavigationRequest::none();
+        }
         if (finished->kind == events::JobKind::Scan && finished->jobId == jobId_) {
             if (stage_ == Stage::Connecting) {
                 stage_ = Stage::Selecting;
@@ -97,6 +153,7 @@ NavigationRequest ExportScreen::handleEvent(const events::Event& event) {
                 stage_ = Stage::Transferring; progressPercent_ = 0;
                 (void)tasks_.submit([this, exportId, plan = std::move(plan)] {
                     (void)exporter_.run(plan, exportId);
+                    manager_.disconnect();
                 });
             }
             return NavigationRequest::none();
@@ -121,14 +178,26 @@ NavigationRequest ExportScreen::handleEvent(const events::Event& event) {
                     workerQueue_.post(events::JobFinishedEvent{events::JobKind::Scan, checkId, false, error});
                 } else {
                     (void)exporter_.run(plan, checkId);
+                    manager_.disconnect();
                 }
             });
             dirty_.set(); return NavigationRequest::none();
         }
     }
-    if (stage_ == Stage::Connecting || stage_ == Stage::Checking)
+    if (stage_ == Stage::SwitchingMode || stage_ == Stage::WaitingForMtp ||
+        stage_ == Stage::Connecting || stage_ == Stage::Checking)
         return NavigationRequest::none();
     return NavigationRequest::ignored();
+}
+
+void ExportScreen::update(std::uint32_t elapsedMillis) {
+    if (stage_ != Stage::WaitingForMtp) return;
+    waitingMillis_ += elapsedMillis;
+    if (waitingMillis_ >= 8000) {
+        stage_ = Stage::Selecting;
+        lastError_ = core::ErrorCode::DeviceNotConnected;
+        dirty_.set();
+    }
 }
 
 void ExportScreen::render(display::Painter& painter) {
@@ -136,7 +205,15 @@ void ExportScreen::render(display::Painter& painter) {
     const auto& font = display::smallFont();
     painter.fillRect({0, 0, 128, 12}, display::palette::kSurface);
     painter.drawText(2, 0, "EXPORT TP-7", font, display::palette::kText);
-    if (stage_ == Stage::Connecting || stage_ == Stage::Checking) {
+    if (stage_ == Stage::SwitchingMode) {
+        painter.drawTextIn({0, 20, 128, 12}, "STARTING MTP", font,
+                           display::palette::kText, display::TextAlign::Center);
+        painter.drawTextIn({0, 38, 128, 12}, "TP-7 RECONNECTING", font,
+                           display::palette::kTextDim, display::TextAlign::Center);
+    } else if (stage_ == Stage::WaitingForMtp) {
+        painter.drawTextIn({0, 24, 128, 12}, "WAITING FOR TP-7", font,
+                           display::palette::kText, display::TextAlign::Center);
+    } else if (stage_ == Stage::Connecting || stage_ == Stage::Checking) {
         painter.drawTextIn({0, 24, 128, 12}, stage_ == Stage::Connecting ? "CONNECTING" : "CHECKING NAME",
                            font, display::palette::kText, display::TextAlign::Center);
     } else if (stage_ == Stage::Transferring) {
