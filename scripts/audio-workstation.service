@@ -2,11 +2,7 @@
 # systemd unit - start the workstation at boot, like firmware.
 #
 # Install it (on the Pi):
-#     sudo cp scripts/audio-workstation.service /etc/systemd/system/
-#     sudo sed -i "s/%USER%/$USER/g; s|%DIR%|$HOME/audio-workstation|g" \
-#         /etc/systemd/system/audio-workstation.service
-#     sudo systemctl daemon-reload
-#     sudo systemctl enable --now audio-workstation
+#     ./scripts/install-autostart.sh
 #
 # Watch it:      journalctl -u audio-workstation -f
 # Stop it:       sudo systemctl stop audio-workstation
@@ -17,25 +13,28 @@
 #
 [Unit]
 Description=Audio Workstation
-After=multi-user.target sound.target
+After=multi-user.target sound.target systemd-udev-settle.service
 Wants=sound.target
 
 [Service]
 Type=simple
 User=%USER%
 WorkingDirectory=%DIR%
-ExecStart=%DIR%/build/src/app/audio-workstation
+ExecStart=%DIR%/scripts/run-pi.sh --oled
 
-Environment=AW_DISPLAY=fb
-Environment=AW_INPUT=touch
+Environment=HOME=/home/%USER%
+Environment=AW_DISPLAY=oled
+Environment=AW_INPUT=none
+Environment=AW_GPIO_CHIP=gpiochip0
 Environment=AW_PROJECTS_ROOT=/home/%USER%/audio-projects
-Environment=AW_ALSA_DEVICE=hw:0,0
+Environment=AW_ALSA_DEVICE=hw:TP7,0
+Environment=AW_MIDI_DEVICE=hw:TP7,0,0
 
 # The UI thread is not realtime; the ALSA writer thread requests SCHED_FIFO.
 LimitRTPRIO=95
 LimitMEMLOCK=infinity
 
-Restart=on-failure
+Restart=always
 RestartSec=3
 
 # There is no terminal, so send the log somewhere you can read it.

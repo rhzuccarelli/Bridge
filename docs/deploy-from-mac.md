@@ -462,11 +462,7 @@ Makes the Pi behave like an appliance: power on, the app is running.
 🍓 **On the Pi:**
 
 ```bash
-sudo cp scripts/audio-workstation.service /etc/systemd/system/
-sudo sed -i "s/%USER%/$USER/g; s|%DIR%|$HOME/audio-workstation|g" \
-    /etc/systemd/system/audio-workstation.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now audio-workstation
+./scripts/install-autostart.sh
 ```
 
 Watch the log:
