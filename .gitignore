@@ -13,3 +13,10 @@ compile_commands.json
 # Runtime artefacts produced by the workstation itself
 *.ppm
 projects/
+
+# ESP-IDF firmware builds
+firmware/**/build/
+firmware/**/sdkconfig
+firmware/**/sdkconfig.old
+firmware/**/managed_components/
+firmware/**/dependencies.lock
