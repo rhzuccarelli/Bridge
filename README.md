@@ -100,3 +100,5 @@ Project/
   KY-040 encoder), setup, and the keyboard control map.
 - **[docs/build.md](docs/build.md)** — building, testing, options, sanitisers.
 - **[docs/roadmap.md](docs/roadmap.md)** — the eight phases and what each delivers.
+- **[docs/esp32p4-port.md](docs/esp32p4-port.md)** — ESP32-P4 feasibility, risks and
+  port plan; start with the TP-7 USB probe in `firmware/esp32p4/tp7-probe`.

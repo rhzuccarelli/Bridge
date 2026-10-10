@@ -1,0 +1,47 @@
+menu "TP-7 probe"
+
+    choice PROBE_USB_PORT
+        prompt "USB peripheral used as host"
+        default PROBE_USB_PORT_HS
+        help
+            The ESP32-P4 has two USB OTG controllers. The high-speed one (480 Mbit/s,
+            internal UTMI PHY) is the one Bridge needs: MTP imports are hundreds of
+            megabytes and TP-7 monitor audio is 96 kHz six-channel 24-bit. The
+            full-speed one (12 Mbit/s) is offered only to rule out wiring problems.
+
+        config PROBE_USB_PORT_HS
+            bool "USB 2.0 OTG high-speed (peripheral 0)"
+        config PROBE_USB_PORT_FS
+            bool "USB 1.1 OTG full-speed (peripheral 1)"
+    endchoice
+
+    config PROBE_VBUS_ENABLE_GPIO
+        int "GPIO that enables 5 V VBUS on the host socket (-1 = none)"
+        range -1 54
+        default -1
+        help
+            Some boards gate the host socket's VBUS through a load switch driven by
+            a GPIO. Without VBUS the TP-7 never signals attach. Leave at -1 when the
+            socket is always powered.
+
+    config PROBE_VBUS_ENABLE_ACTIVE_HIGH
+        bool "VBUS enable is active high"
+        default y
+        depends on PROBE_VBUS_ENABLE_GPIO >= 0
+
+    config PROBE_REQUEST_MTP
+        bool "Switch a TP-7 in USB-audio mode into MTP mode (once per boot)"
+        default y
+        help
+            Sends the same Teenage Engineering SysEx the Raspberry Pi build sends
+            through ALSA, but as raw USB-MIDI packets on the MIDI OUT endpoint.
+
+    config PROBE_LIST_OBJECTS
+        int "Maximum root objects to list over MTP"
+        default 32
+
+    config PROBE_THROUGHPUT_MIB
+        int "MiB to read with GetPartialObject for the throughput test (0 = skip)"
+        default 16
+
+endmenu

@@ -152,4 +152,6 @@ targets passing. Physical import/export was then accepted with a real TP-7.
 ## Later
 
 - Punch-in recording.
-- ESP32-P4 port: a new `src/platform/esp32p4/`, and nothing else.
+- ESP32-P4 port: a new `src/platform/esp32p4/`, and nothing else. Feasibility, risks
+  and the step plan are in [esp32p4-port.md](esp32p4-port.md); step P0, the TP-7 USB
+  probe in `firmware/esp32p4/tp7-probe`, is in place.

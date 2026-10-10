@@ -1,0 +1,12 @@
+CONFIG_IDF_TARGET="esp32p4"
+
+# The TP-7 is a composite UAC/MIDI device; its configuration descriptor is far
+# larger than the 256-byte default, which makes enumeration fail outright.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048
+
+# Boards that fan the high-speed port out to several USB-A sockets do so through
+# an on-board hub.
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
