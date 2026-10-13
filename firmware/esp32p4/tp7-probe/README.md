@@ -65,6 +65,12 @@ monitor through one of the board's USB-C sockets as usual.
   4-wire USB-C socket has no CC wiring a host needs. Many such sockets are made
   for charging and carry the device-side 5.1 kΩ resistors instead. Either way the
   TP-7 never sees a host.
+  A **5-wire** USB-C socket whose fifth wire is CC can work: first measure the
+  fifth wire against GND with nothing plugged in. If it reads open (no 5.1 kΩ),
+  solder a 56 kΩ resistor from that wire to the 5 V (red) wire, and use a plain
+  USB 2.0 C-to-C cable, not an e-marked one. If it reads about 5.1 kΩ, or
+  2.5 kΩ when CC1 and CC2 are tied together, the socket is built as a device;
+  use USB-A instead.
 - **Match the wires by colour, then verify with a multimeter.** USB colours are
   red = 5 V (VBUS), black = GND, white = D−, green = D+. Join the Pico cable to
   the socket colour for colour. Before plugging in the TP-7:
