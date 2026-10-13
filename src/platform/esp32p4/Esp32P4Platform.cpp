@@ -8,6 +8,7 @@
 #include "aw/core/Logger.hpp"
 #include "aw/platform/NullAudioOutput.hpp"
 #include "aw/platform/esp32p4/EspGpioInput.hpp"
+#include "aw/platform/esp32p4/EspSpiOledBus.hpp"
 #include "aw/platform/esp32p4/SerialPreviewDisplay.hpp"
 #include "esp_timer.h"
 
@@ -80,7 +81,9 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     hal::Platform platform;
     platform.clock = std::make_unique<EspClock>();
     platform.storage = std::make_unique<NoCardStorage>(config.projectsRoot);
-    platform.display = std::make_unique<SerialPreviewDisplay>(config.previewIntervalMillis);
+    platform.display = std::make_unique<SerialPreviewDisplay>(
+        config.previewIntervalMillis,
+        config.oled.sck >= 0 ? std::make_unique<EspSpiOledBus>(config.oled) : nullptr);
     platform.buttons = std::make_unique<EspGpioButtons>(config.pins);
     platform.encoder = std::make_unique<EspGpioEncoder>(config.pins);
     platform.audioOutput = std::make_unique<NullAudioOutput>();
@@ -92,8 +95,8 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     if (!platform.isComplete()) {
         return core::makeError(core::ErrorCode::Unknown, "esp32p4 platform incomplete");
     }
-    core::log::info(kModule, "platform ready: GPIO encoder and buttons, serial display "
-                             "preview, null storage, audio and USB");
+    core::log::info(kModule, "platform ready: SPI OLED (mirrored to serial), GPIO encoder "
+                             "and buttons, null storage, audio and USB");
     return platform;
 }
 

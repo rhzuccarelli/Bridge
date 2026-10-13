@@ -12,13 +12,14 @@
 
 namespace aw::platform::esp32p4 {
 
-/// The SSD1306 display as the device will drive it, previewed on the serial log.
+/// The SSD1306 display, mirrored on the serial log.
 ///
-/// The UI's frames go through the real `oled::Ssd1306Display` (same
-/// thresholding, same page packing), over a bus that discards the bytes. After
-/// each `present()`, the packed page buffer is what the OLED would show; when
-/// it changes, a background thread prints it as text, two pixel rows per line
-/// using Unicode half blocks.
+/// The UI's frames go through the real `oled::Ssd1306Display` and out over
+/// `bus` to the panel (a null bus discards them, for a board with no OLED).
+/// After each `present()` the packed page buffer is exactly what the panel
+/// shows; when it changes, a background thread prints it as text, two pixel
+/// rows per line using Unicode half blocks. That keeps the screen readable
+/// from a capture, without anyone looking at the board.
 ///
 /// Printing runs on its own thread because a frame takes about a second of UART
 /// time and the UI loop must keep its 30 Hz. Frames that arrive while one is
@@ -26,7 +27,7 @@ namespace aw::platform::esp32p4 {
 /// `intervalMillis` apart. The last frame is always printed eventually.
 class SerialPreviewDisplay final : public hal::DisplayInterface {
 public:
-    explicit SerialPreviewDisplay(std::uint32_t intervalMillis);
+    SerialPreviewDisplay(std::uint32_t intervalMillis, std::unique_ptr<oled::OledBus> bus);
     ~SerialPreviewDisplay() override;
 
     [[nodiscard]] hal::DisplayInfo info() const noexcept override;

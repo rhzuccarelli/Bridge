@@ -123,7 +123,7 @@ shared code were needed:
 - `AwCompilerOptions` warning flags are now C++-only, and `AW_INCLUDE_DIR` no
   longer assumes the repository is the top-level CMake project.
 
-## P2 progress: input
+## P2 progress: input and display
 
 The KY-040 is wired to the Pico with CLK on GPIO16, DT on GPIO15, SW on GPIO17,
 and + on 3.3 V. A pin-finder firmware identified the pins on the bench: CLK
@@ -132,6 +132,14 @@ pins at 1 kHz from a priority-10 task. They reuse the Pi's `QuadratureDecoder`
 and `ButtonStateMachine`, which now live in `aw/platform/InputDecoding.hpp`.
 On the board, one clockwise click moved the home-screen highlight from
 TRANSPORT to TRACKS, and a press opened the Tracks screen.
+
+The same 7-pin SSD1306 module as the Pi's is wired with SCK on GPIO6, SDA
+(MOSI) on GPIO5, RES on GPIO4, DC on GPIO3 and CS on GPIO14, with VCC on 3.3 V.
+`EspSpiOledBus` drives it over SPI2 at 8 MHz in mode 0, under the unchanged
+`Ssd1306Display` protocol code. It worked on the first flash.
+`SerialPreviewDisplay` still mirrors each frame to the serial log, so a
+capture shows what the panel shows. Storage (FatFS on SD) is the remaining P2
+item.
 
 ## If a TP-7 does not connect
 

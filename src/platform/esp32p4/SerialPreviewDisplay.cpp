@@ -8,8 +8,8 @@
 namespace aw::platform::esp32p4 {
 namespace {
 
-/// The panel's bytes go nowhere: the page buffer, not the wire, is what gets
-/// previewed. Replaced by an `esp_lcd`/SPI bus in step P2.
+/// For a board without an OLED: the page buffer, not the wire, is what gets
+/// previewed.
 class DiscardingOledBus final : public oled::OledBus {
 public:
     core::Status reset() override { return core::success(); }
@@ -27,8 +27,10 @@ constexpr const char* kFullBlock = "█";
 
 }  // namespace
 
-SerialPreviewDisplay::SerialPreviewDisplay(std::uint32_t intervalMillis)
-    : panel_{oled::OledConfig{}, std::make_unique<DiscardingOledBus>()},
+SerialPreviewDisplay::SerialPreviewDisplay(std::uint32_t intervalMillis,
+                                           std::unique_ptr<oled::OledBus> bus)
+    : panel_{oled::OledConfig{},
+             bus ? std::move(bus) : std::make_unique<DiscardingOledBus>()},
       intervalMillis_{intervalMillis} {}
 
 SerialPreviewDisplay::~SerialPreviewDisplay() { close(); }

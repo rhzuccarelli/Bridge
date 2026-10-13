@@ -19,7 +19,7 @@ The platform assembly is `src/platform/esp32p4`, and the composition root is
 | HAL interface | P1 backend | Replaced in |
 | --- | --- | --- |
 | Clock | `esp_timer` + `usleep` | — |
-| Display | `SerialPreviewDisplay`: the real `Ssd1306Display` logic (128×64), with each changed frame printed to the serial log | P2 (SSD1306 over SPI) |
+| Display | 128×64 SSD1306 over SPI2 (`EspSpiOledBus`, 8 MHz, mode 0): SCK GPIO6, SDA GPIO5, RES GPIO4, DC GPIO3, CS GPIO14, VCC on 3.3 V. `SerialPreviewDisplay` mirrors each changed frame to the serial log | done |
 | Storage | `NoCardStorage`: an empty projects root that refuses reads and writes | P2 (FatFS on SD) |
 | Encoder + push switch | `EspGpioEncoder` / `EspGpioButtons`: KY-040 with CLK on GPIO16, DT on GPIO15 and SW on GPIO17, sampled at 1 kHz with the Pi's decoder and debounce logic | done |
 | Audio output | `NullAudioOutput`: drives the engine on a wall clock and discards samples | P3 (I2S) |
