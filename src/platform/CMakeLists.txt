@@ -11,6 +11,27 @@
 ##                       touch, ANSI terminal preview, keyboard input, and the
 ##                       composite button merger.
 ##
+##
+## ESP32-P4 firmware: none of the Linux backends exist there, so the assembly
+## is built from its own sources plus the portable backend logic it shares
+## (the null audio clock and the SSD1306 protocol), and nothing else here is
+## configured.  Linked against ESP-IDF components by their idf:: targets.
+##
+if(AW_PLATFORM STREQUAL "esp32p4")
+    add_library(aw_platform STATIC
+        NullAudioOutput.cpp
+        esp32p4/Esp32P4Platform.cpp
+        esp32p4/SerialPreviewDisplay.cpp
+        oled/Ssd1306Display.cpp)
+    add_library(aw::platform ALIAS aw_platform)
+    target_compile_definitions(aw_platform PUBLIC AW_PLATFORM_ESP32P4=1)
+    target_include_directories(aw_platform PUBLIC ${AW_INCLUDE_DIR})
+    target_link_libraries(aw_platform
+        PUBLIC aw::core aw::hal aw::compiler_options
+        PRIVATE idf::esp_timer idf::pthread)
+    return()
+endif()
+
 add_library(aw_platform_posix STATIC posix/PosixStorage.cpp)
 add_library(aw::platform_posix ALIAS aw_platform_posix)
 target_include_directories(aw_platform_posix PUBLIC ${AW_INCLUDE_DIR})

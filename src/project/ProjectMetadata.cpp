@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -374,12 +376,13 @@ private:
             }
         }
         if (!seenDigit) return invalid("expected float");
+        // strtof rather than stof: the ESP-IDF build has no exceptions.
         const std::string token{text_.substr(start, position_ - start)};
-        try {
-            return std::stof(token);
-        } catch (...) {
-            return invalid("bad float");
-        }
+        char* end = nullptr;
+        errno = 0;
+        const float value = std::strtof(token.c_str(), &end);
+        if (end != token.c_str() + token.size() || errno == ERANGE) return invalid("bad float");
+        return value;
     }
 
     core::Result<bool> parseBool() {

@@ -115,3 +115,16 @@ cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 cmake --build build-asan && ./build-asan/tests/aw_tests
 ```
+
+## ESP32-P4 firmware
+
+The P4 port lives in `firmware/esp32p4` and builds with ESP-IDF v5.5.x, not with
+the CMake commands above:
+
+```bash
+. ~/esp/esp-idf/export.sh
+cd firmware/esp32p4/bridge && idf.py set-target esp32p4 && idf.py build
+```
+
+It compiles the same `src/` libraries with `AW_PLATFORM=esp32p4`. See
+`firmware/esp32p4/bridge/README.md` and `docs/esp32p4-port.md`.

@@ -36,7 +36,8 @@ USB*, as the Pi does. The rest of the work is ordinary backend code.
 
 ### Notes that change code
 
-- **The pthread stack defaults to 3 KiB on ESP-IDF.** The streaming thread, I/O
+- **The pthread stack defaults to 3 KiB on ESP-IDF.** P1 raises the default to
+  16 KiB in `sdkconfig.defaults`, which is enough to boot. The streaming thread, I/O
   worker and UI need more. Call `esp_pthread_set_cfg` before creating each
   `std::thread` (from the platform layer, so the portable code stays unchanged).
   The same call sets priorities, which replace `SCHED_FIFO`.
@@ -50,8 +51,9 @@ USB*, as the Pi does. The rest of the work is ordinary backend code.
   atomic, so it must be designed explicitly.
 - **FAT32 caps files at 4 GiB.** That matches the RIFF limit `WavWriter` already
   enforces. Enable long file names (`CONFIG_FATFS_LFN_HEAP`).
-- `aw_platform_dev` stops the configure step on non-Linux hosts. It has to be
-  gated when the ESP-IDF build includes the tree.
+- `aw_platform_dev` stops the configure step on non-Linux hosts. The
+  `esp32p4` branch of `src/platform/CMakeLists.txt` now returns before it is
+  reached (P1).
 
 ## Bench results (P0, Waveshare ESP32-P4-Pico)
 
@@ -102,6 +104,25 @@ cannot be in audio mode and MTP mode at once. Two options:
 The probe settled the class question: UAC1, high-bandwidth. The recommendation
 stays local I2S, and USB monitoring stays deferred.
 
+## P1 result
+
+`firmware/esp32p4/bridge` builds every portable layer unchanged, through the
+repository's own per-layer CMake targets with `AW_PLATFORM=esp32p4`. The image
+is about 390 KiB, and the build has no warnings under ESP-IDF's `-Werror=all`.
+On the Pico it reaches `app_main` 1.8 s after reset, initialises the whole
+application (engine on `NullAudioOutput`, null storage, input and USB), and
+prints the home screen to the serial log through the real SSD1306 packing code.
+There are 472 KiB of internal RAM and 32 MiB of PSRAM free. Three changes to
+shared code were needed:
+
+- `ProjectMetadata.cpp` parsed floats with `std::stof` inside `try`/`catch`.
+  That does not compile with `-fno-exceptions`, so it now uses `strtof`.
+- `PlaybackScreen.cpp` formatted the transport time into 12 bytes, which
+  truncates past 99 minutes. GCC 14 rejects this under ESP-IDF's
+  `-Werror=all`. The buffer is now 32 bytes.
+- `AwCompilerOptions` warning flags are now C++-only, and `AW_INCLUDE_DIR` no
+  longer assumes the repository is the top-level CMake project.
+
 ## If a TP-7 does not connect
 
 On the bench the TP-7 connected on the first attempt (see above). When it does
@@ -123,7 +144,7 @@ Each step ends with something to run on the bench, the same way the Pi phases di
 | Step | Delivers | Bench acceptance |
 | --- | --- | --- |
 | **P0 — USB probe** (done, passed on the bench) | `firmware/esp32p4/tp7-probe` | TP-7 enumerates at high speed, switches to MTP, session opens, read throughput measured |
-| P1 — Firmware skeleton | ESP-IDF project in `firmware/esp32p4/bridge` building all portable layers as a component; `AW_PLATFORM=esp32p4`; null backends; `app_main` composition root | Boots; UI renders to the serial log |
+| **P1 — Firmware skeleton** (done, boots on the bench) | ESP-IDF project in `firmware/esp32p4/bridge` building all portable layers as a component; `AW_PLATFORM=esp32p4`; null backends; `app_main` composition root | Boots; UI renders to the serial log |
 | P2 — Storage, display, input | `FatFsStorage`, SSD1306 over `esp_lcd`, encoder/buttons over GPIO | Create/open/save projects; navigate the UI on the OLED |
 | P3 — Audio out | `I2sAudioOutput` (48 kHz, 24-bit, 256-frame periods) | Six-lane playback with no xruns over a long session |
 | P4 — MTP | `EspUsbHost`, `EspMtpDevice`, `Tp7UsbMidiModeSwitcher`, built from the probe | Phase 8 acceptance (`docs/phase8-tp7-test.md`) on the P4 |
