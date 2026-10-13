@@ -52,7 +52,7 @@ void PlaybackScreen::render(display::Painter& painter) {
     painter.drawTextIn({90, 0, 36, 12}, state, small, display::palette::kText,
                        display::TextAlign::Right);
     const auto millis = core::framesToMillis(engine_.transport().position(), 48000);
-    char time[12];
+    char time[32];  // Fits any long long minutes; 12 truncated past 99 minutes.
     std::snprintf(time, sizeof(time), "%02lld:%02lld.%03lld",
                   static_cast<long long>(millis / 60000),
                   static_cast<long long>((millis / 1000) % 60),

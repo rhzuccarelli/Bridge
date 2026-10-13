@@ -124,7 +124,7 @@ NavigationRequest ImportScreen::handleEvent(const events::Event& event) {
 
     if (const auto* encoder = std::get_if<events::EncoderEvent>(&event)) {
         const int count = static_cast<int>(browser_.entries().size());
-        selection_ = std::clamp(selection_ + encoder->delta, 0, std::max(0, count - 1));
+        selection_ = std::clamp<int>(selection_ + encoder->delta, 0, std::max(0, count - 1));
         if (selection_ < scrollOffset_) scrollOffset_ = selection_;
         if (selection_ >= scrollOffset_ + 3) scrollOffset_ = selection_ - 2;
         dirty_.set(); return NavigationRequest::none();

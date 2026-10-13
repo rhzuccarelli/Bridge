@@ -94,8 +94,8 @@ NavigationRequest TrackViewScreen::handleEvent(const events::Event& event) {
     }
 
     if (const auto* encoder = std::get_if<events::EncoderEvent>(&event)) {
-        int selected = std::clamp(static_cast<int>(focusedIndex_) + encoder->delta, 0,
-                              static_cast<int>(project::kTrackCount - 1));
+        int selected = std::clamp<int>(static_cast<int>(focusedIndex_) + encoder->delta, 0,
+                                   static_cast<int>(project::kTrackCount - 1));
         focusedIndex_ = static_cast<std::size_t>(selected);
         dirty_.set();
         return NavigationRequest::none();

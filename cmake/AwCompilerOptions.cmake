@@ -11,7 +11,9 @@ add_library(aw::compiler_options ALIAS aw_compiler_options)
 option(AW_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(aw_compiler_options INTERFACE
+    # C++ only: the ESP-IDF build links these targets into an executable that
+    # also compiles C, which rejects several of these flags.
+    target_compile_options(aw_compiler_options INTERFACE $<$<COMPILE_LANGUAGE:CXX>:
         -Wall
         -Wextra
         -Wpedantic
@@ -21,8 +23,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Woverloaded-virtual
         -Wnull-dereference
         -Wdouble-promotion   # catches accidental float->double in the audio path
-        -Wformat=2)
+        -Wformat=2>)
     if(AW_WARNINGS_AS_ERRORS)
-        target_compile_options(aw_compiler_options INTERFACE -Werror)
+        target_compile_options(aw_compiler_options INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Werror>)
     endif()
 endif()

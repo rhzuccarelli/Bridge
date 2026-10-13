@@ -13,5 +13,8 @@ target_link_libraries(aw_app
     PUBLIC aw::core aw::hal aw::events aw::display aw::audio aw::project aw::mtp aw::ui
            aw::compiler_options)
 
-add_executable(audio-workstation main.cpp)
-target_link_libraries(audio-workstation PRIVATE aw::app aw::platform)
+# On the ESP32-P4 the composition root is app_main in firmware/esp32p4/bridge.
+if(NOT AW_PLATFORM STREQUAL "esp32p4")
+    add_executable(audio-workstation main.cpp)
+    target_link_libraries(audio-workstation PRIVATE aw::app aw::platform)
+endif()

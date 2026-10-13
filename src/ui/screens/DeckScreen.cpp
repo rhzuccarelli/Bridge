@@ -38,7 +38,7 @@ void DeckScreen::onEnter() {
 NavigationRequest DeckScreen::handleEvent(const events::Event& event) {
     if (const auto* encoder = std::get_if<events::EncoderEvent>(&event)) {
         const int count = projects_.hasProject() ? static_cast<int>(projects_.project().decks().size()) : 0;
-        selection_ = std::clamp(selection_ + encoder->delta, 0, std::max(0, count - 1));
+        selection_ = std::clamp<int>(selection_ + encoder->delta, 0, std::max(0, count - 1));
         dirty_.set(); return NavigationRequest::none();
     }
     const auto* button = std::get_if<events::ButtonEvent>(&event);

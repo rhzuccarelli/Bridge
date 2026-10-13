@@ -1,0 +1,26 @@
+CONFIG_IDF_TARGET="esp32p4"
+
+# Waveshare ESP32-P4-Pico: 32 MiB flash, 32 MiB PSRAM.
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Audio stream ring buffers (about 384 KiB each) belong in PSRAM; large
+# allocations go there automatically, small ones stay in internal RAM.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# The fastest non-experimental speed (the default is 20 MHz). It also cuts the
+# boot-time PSRAM test of all 32 MiB from 3.8 s.
+CONFIG_SPIRAM_SPEED_80M=y
+
+# The UI loop sleeps to a 33 ms frame; at the default 100 Hz tick every sleep
+# rounds to 10 ms.
+CONFIG_FREERTOS_HZ=1000
+
+# app_main runs the UI loop. std::thread (audio clock, streaming, I/O worker,
+# display preview) gets the pthread default, which is 3 KiB otherwise.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
+
+# The portable layers return core::Result and never throw.
+CONFIG_COMPILER_CXX_EXCEPTIONS=n

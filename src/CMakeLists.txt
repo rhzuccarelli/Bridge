@@ -15,7 +15,10 @@
 ##   platform  <- core, hal            (implements the interfaces)
 ##   app       <- everything           (composition root)
 ##
-set(AW_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include" CACHE INTERNAL "public headers")
+# Relative to this file, not CMAKE_SOURCE_DIR: the ESP-IDF firmware build adds
+# this directory from its own project.
+cmake_path(SET AW_INCLUDE_DIR NORMALIZE "${CMAKE_CURRENT_LIST_DIR}/../include")
+set(AW_INCLUDE_DIR "${AW_INCLUDE_DIR}" CACHE INTERNAL "public headers")
 
 add_subdirectory(core)
 add_subdirectory(hal)
