@@ -9,6 +9,7 @@
 #include "aw/platform/NullAudioOutput.hpp"
 #include "aw/platform/esp32p4/EspGpioInput.hpp"
 #include "aw/platform/esp32p4/EspSpiOledBus.hpp"
+#include "aw/platform/esp32p4/EspUsb.hpp"
 #include "aw/platform/esp32p4/SerialPreviewDisplay.hpp"
 #include "esp_timer.h"
 
@@ -65,16 +66,6 @@ private:
     core::Path root_;
 };
 
-class NoUsb final : public hal::USBInterface {
-public:
-    core::Status start() override { return core::success(); }
-    void stop() noexcept override {}
-    void setHotplugListener(hal::UsbHotplugListener* /*listener*/) noexcept override {}
-    core::Result<std::vector<hal::UsbDeviceInfo>> enumerate() const override {
-        return std::vector<hal::UsbDeviceInfo>{};
-    }
-};
-
 }  // namespace
 
 core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
@@ -88,15 +79,16 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     platform.encoder = std::make_unique<EspGpioEncoder>(config.pins);
     platform.audioOutput = std::make_unique<NullAudioOutput>();
     platform.audioInput = nullptr;
-    platform.usb = std::make_unique<NoUsb>();
-    platform.mtp = nullptr;
-    platform.deviceMode = nullptr;
+    EspUsbBackends usb = createUsbBackends();
+    platform.usb = std::move(usb.usb);
+    platform.mtp = std::move(usb.mtp);
+    platform.deviceMode = std::move(usb.deviceMode);
 
     if (!platform.isComplete()) {
         return core::makeError(core::ErrorCode::Unknown, "esp32p4 platform incomplete");
     }
     core::log::info(kModule, "platform ready: SPI OLED (mirrored to serial), GPIO encoder "
-                             "and buttons, null storage, audio and USB");
+                             "and buttons, USB host with TP-7 MTP; null storage and audio");
     return platform;
 }
 

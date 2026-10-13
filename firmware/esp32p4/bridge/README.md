@@ -23,7 +23,7 @@ The platform assembly is `src/platform/esp32p4`, and the composition root is
 | Storage | `NoCardStorage`: an empty projects root that refuses reads and writes | P2 (FatFS on SD) |
 | Encoder + push switch | `EspGpioEncoder` / `EspGpioButtons`: KY-040 with CLK on GPIO16, DT on GPIO15 and SW on GPIO17, sampled at 1 kHz with the Pi's decoder and debounce logic | done |
 | Audio output | `NullAudioOutput`: drives the engine on a wall clock and discards samples | P3 (I2S) |
-| USB / MTP | No devices / absent | P4 |
+| USB, MTP, TP-7 mode | `createUsbBackends` (`EspUsb.cpp`, `usb/`): ESP-IDF USB host on the high-speed port, a PTP/MTP initiator built from the probe (reads with GetPartialObject, writes with SendObjectInfo/SendObject), and the SysEx switch into MTP sent as USB-MIDI | done (Import verified) |
 
 ## Build, flash, watch
 
@@ -65,6 +65,11 @@ That is the home screen as the 128×64 OLED will show it: "No project",
 Frames are printed only when the picture changes, and at most every 2 s
 (`Esp32P4Config::previewIntervalMillis`). With no input, the home screen prints
 once.
+
+Every console writer (Bridge's logger, ESP-IDF's `ESP_LOGx` output and the
+display preview) goes through one lock in `EspConsole`, one whole line at a
+time. Without it, the three writers interleave character by character on the
+UART.
 
 ## Configuration notes (`sdkconfig.defaults`)
 

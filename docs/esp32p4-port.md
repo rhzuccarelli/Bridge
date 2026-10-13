@@ -141,6 +141,25 @@ The same 7-pin SSD1306 module as the Pi's is wired with SCK on GPIO6, SDA
 capture shows what the panel shows. Storage (FatFS on SD) is the remaining P2
 item.
 
+## P4 progress: TP-7 mode switch and MTP
+
+Opening Import or Export on the P4 now switches the TP-7 into MTP mode on its
+own, as on the Pi. The portable screens already called
+`DeviceModeInterface::requestMtpMode()`; the P4 had no backend for it.
+`createUsbBackends()` adds three backends that share one ESP-IDF USB host:
+`USBInterface` for hotplug, `MTPInterface` (the probe's PTP code plus the
+host-to-device data phase, for SendObjectInfo and SendObject), and the TP-7
+SysEx mode switch over USB-MIDI. Hotplug callbacks run on their own task,
+because `MtpManager` closes the session from inside the detach callback.
+
+On the bench, Import worked twice in a row. The TP-7 dropped out of audio mode,
+came back as `2367:0019 'TP-7 MTP Device'` at high speed, the session opened,
+and the screen listed `library`, `memo` and `recordings`. Leaving the screen
+closed the session, and the TP-7 returned to audio mode. Each return logs
+`E HUB: Root port reset failed`, then succeeds on the retry about 0.6 s later.
+Not yet exercised: copying a take (it needs the SD card), and Export (it needs
+a project, so it also waits on storage).
+
 ## If a TP-7 does not connect
 
 On the bench the TP-7 connected on the first attempt (see above). When it does

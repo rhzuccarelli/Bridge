@@ -24,3 +24,8 @@ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
 
 # The portable layers return core::Result and never throw.
 CONFIG_COMPILER_CXX_EXCEPTIONS=n
+
+# The TP-7 is a composite UAC/MIDI device whose configuration descriptor is far
+# larger than the 256-byte default; enumeration fails outright with it.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048
+CONFIG_USB_HOST_HUBS_SUPPORTED=y

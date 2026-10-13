@@ -29,12 +29,12 @@ struct Esp32P4Config {
 ///
 /// The clock, the SSD1306 OLED over SPI (`EspSpiOledBus`, mirrored to the
 /// serial log) and the encoder with its push switch (`EspGpioEncoder`,
-/// `EspGpioButtons`) are real hardware. The other backends are stand-ins that
+/// `EspGpioButtons`) and the TP-7 over USB (`createUsbBackends`: hotplug,
+/// MTP, and the switch into MTP mode) are real hardware. The other backends are stand-ins that
 /// let the whole portable application boot and run unchanged:
 ///  - storage is an empty volume that refuses writes (FatFS on SD is P2),
 ///  - audio output is `NullAudioOutput`, which still drives the engine on a
-///    wall clock (I2S is P3),
-///  - USB reports no devices and MTP is absent (P4).
+///    wall clock (I2S is P3).
 [[nodiscard]] core::Result<hal::Platform> createPlatform(const Esp32P4Config& config);
 
 }  // namespace aw::platform::esp32p4
