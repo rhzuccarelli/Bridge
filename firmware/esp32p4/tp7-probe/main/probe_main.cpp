@@ -39,6 +39,10 @@ constexpr std::uint8_t kSubclassMidiStreaming = 0x03;
 constexpr std::uint8_t kClassStillImage = 0x06;
 constexpr std::uint8_t kClassVendor = 0xFF;
 constexpr std::uint8_t kAudioProtocolUac2 = 0x20;
+constexpr std::uint8_t kSubclassAudioStreaming = 0x02;
+constexpr std::uint8_t kDescriptorCsInterface = 0x24;
+constexpr std::uint8_t kAsGeneral = 0x01;
+constexpr std::uint8_t kAsFormatType = 0x02;
 
 struct Endpoint {
     std::uint8_t address{0};
@@ -137,6 +141,103 @@ Layout classify(const usb_config_desc_t* config) {
     }
     finishInterface();
     return layout;
+}
+
+/// Prints one line per isochronous audio-streaming alternate setting: its
+/// direction, channel count, sample format and how many frames one packet
+/// carries. UAC1 lists its sample rates in the descriptor; UAC2 keeps them on
+/// a clock entity, so for UAC2 the packet capacity is the hint.
+void describeAudioStreaming(const usb_config_desc_t* config, int audioClass) {
+    int offset = 0;
+    const auto* descriptor = reinterpret_cast<const usb_standard_desc_t*>(config);
+    const usb_intf_desc_t* current = nullptr;
+    int channels = 0;
+    int subslot = 0;
+    int bits = 0;
+    std::string rates;
+
+    while ((descriptor = usb_parse_next_descriptor(descriptor, config->wTotalLength, &offset))) {
+        const auto* raw = reinterpret_cast<const std::uint8_t*>(descriptor);
+        if (descriptor->bDescriptorType == USB_B_DESCRIPTOR_TYPE_INTERFACE) {
+            current = reinterpret_cast<const usb_intf_desc_t*>(descriptor);
+            channels = subslot = bits = 0;
+            rates.clear();
+            continue;
+        }
+        if (current == nullptr || current->bInterfaceClass != kClassAudio ||
+            current->bInterfaceSubClass != kSubclassAudioStreaming)
+            continue;
+        if (descriptor->bDescriptorType == kDescriptorCsInterface && raw[0] >= 6) {
+            if (audioClass == 2 && raw[2] == kAsGeneral && raw[0] >= 11) {
+                channels = raw[10];
+            } else if (audioClass == 2 && raw[2] == kAsFormatType) {
+                subslot = raw[4];
+                bits = raw[5];
+            } else if (audioClass == 1 && raw[2] == kAsFormatType && raw[0] >= 8) {
+                channels = raw[4];
+                subslot = raw[5];
+                bits = raw[6];
+                for (int i = 0; i < raw[7] && 8 + 3 * i + 2 < raw[0]; ++i) {
+                    const unsigned hz = raw[8 + 3 * i] | (raw[9 + 3 * i] << 8) |
+                                        (raw[10 + 3 * i] << 16);
+                    rates += (rates.empty() ? "" : "/") + std::to_string(hz);
+                }
+            }
+        } else if (descriptor->bDescriptorType == USB_B_DESCRIPTOR_TYPE_ENDPOINT) {
+            const auto* ep = reinterpret_cast<const usb_ep_desc_t*>(descriptor);
+            if ((ep->bmAttributes & USB_BM_ATTRIBUTES_XFERTYPE_MASK) !=
+                    USB_BM_ATTRIBUTES_XFER_ISOC ||
+                (ep->bmAttributes & 0x30) == 0x10)  // Explicit feedback endpoint.
+                continue;
+            // High-speed high-bandwidth endpoints move up to three transactions
+            // per microframe (bits 12:11). The ESP-IDF v5.5 host controller
+            // driver ignores those bits and schedules one.
+            const int transactions = 1 + ((ep->wMaxPacketSize >> 11) & 3);
+            const int packet = (ep->wMaxPacketSize & 0x7FF) * transactions;
+            const int intervalUs = 125 << (ep->bInterval - 1);  // High speed.
+            const int frameBytes = channels * subslot;
+            const int frames = frameBytes > 0 ? packet / frameBytes : 0;
+            ESP_LOGI(kTag,
+                     "    iface %u alt %u: %s ep 0x%02x, %d ch, %d-bit in %d bytes, %d bytes "
+                     "per %d us = %d frames (~%d kHz max)%s%s%s",
+                     current->bInterfaceNumber, current->bAlternateSetting,
+                     (ep->bEndpointAddress & USB_B_ENDPOINT_ADDRESS_EP_DIR_MASK) ? "IN " : "OUT",
+                     ep->bEndpointAddress, channels, bits, subslot, packet, intervalUs, frames,
+                     intervalUs > 0 ? frames * 1000 / intervalUs : 0,
+                     rates.empty() ? "" : ", rates ", rates.c_str(),
+                     transactions > 1 ? ", HIGH-BANDWIDTH (several transactions/uframe)" : "");
+        }
+    }
+}
+
+/// The host library always activates configuration 1. Composite devices such
+/// as the TP-7 offer others (Linux may pick a different one), so read and
+/// summarise every configuration the device offers.
+void surveyConfigurations(usb_host_client_handle_t client, usb_device_handle_t device,
+                          std::uint8_t count) {
+    for (std::uint8_t index = 0; index < count; ++index) {
+        std::vector<std::uint8_t> bytes;
+        if (const esp_err_t err = probe::readConfigDescriptor(client, device, index, bytes);
+            err != ESP_OK) {
+            ESP_LOGE(kTag, "configuration index %u: GET_DESCRIPTOR failed (%s)", index,
+                     esp_err_to_name(err));
+            continue;
+        }
+        const auto* config = reinterpret_cast<const usb_config_desc_t*>(bytes.data());
+        if (bytes.size() < sizeof(usb_config_desc_t) || config->wTotalLength > bytes.size()) {
+            ESP_LOGE(kTag, "configuration index %u: truncated (%u bytes)", index,
+                     static_cast<unsigned>(bytes.size()));
+            continue;
+        }
+        const Layout layout = classify(config);
+        ESP_LOGI(kTag, "configuration %u of %u (bConfigurationValue %u, %u bytes): audio=%s, "
+                       "isochronous endpoints=%d, MIDI OUT=%s, MTP=%s",
+                 index + 1, count, config->bConfigurationValue, config->wTotalLength,
+                 layout.audioClass == 2 ? "UAC2" : layout.audioClass == 1 ? "UAC1" : "none",
+                 layout.isochronousEndpoints, layout.midi.found ? "yes" : "no",
+                 layout.mtp.found ? "yes" : "no");
+        describeAudioStreaming(config, layout.audioClass);
+    }
 }
 
 struct Throughput {
@@ -367,10 +468,14 @@ void probeDevice(usb_host_client_handle_t client, std::uint8_t address) {
     usb_print_config_descriptor(config, nullptr);
 
     const Layout layout = classify(config);
-    ESP_LOGI(kTag, "summary: audio=%s, isochronous endpoints=%d, MIDI OUT=%s, MTP=%s",
-             layout.audioClass == 2 ? "UAC2" : layout.audioClass == 1 ? "UAC1" : "none",
+    ESP_LOGI(kTag,
+             "summary (active configuration %u): audio=%s, isochronous endpoints=%d, "
+             "MIDI OUT=%s, MTP=%s",
+             config->bConfigurationValue, layout.audioClass == 2 ? "UAC2" : layout.audioClass == 1 ? "UAC1" : "none",
              layout.isochronousEndpoints, layout.midi.found ? "yes" : "no",
              layout.mtp.found ? "yes" : "no");
+    if (deviceDescriptor->bNumConfigurations > 1)
+        surveyConfigurations(client, device, deviceDescriptor->bNumConfigurations);
     if (info.speed != USB_SPEED_HIGH)
         ESP_LOGW(kTag, "not high speed: MTP will be slow and TP-7 monitor audio cannot fit");
 

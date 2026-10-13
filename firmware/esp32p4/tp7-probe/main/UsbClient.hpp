@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -76,6 +77,12 @@ private:
     SemaphoreHandle_t done_{nullptr};
     usb_transfer_status_t lastStatus_{USB_TRANSFER_STATUS_COMPLETED};
 };
+
+/// Reads configuration descriptor `index` (0-based) with GET_DESCRIPTOR,
+/// whether or not it is the active one. The host library only exposes the
+/// active configuration, and it always activates the first.
+esp_err_t readConfigDescriptor(usb_host_client_handle_t client, usb_device_handle_t device,
+                               std::uint8_t index, std::vector<std::uint8_t>& descriptor);
 
 [[nodiscard]] const char* transferStatusName(usb_transfer_status_t status);
 

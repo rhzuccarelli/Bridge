@@ -32,7 +32,7 @@ USB*, as the Pi does. The rest of the work is ordinary backend code.
 | Display | spidev SSD1306 | `esp_lcd` / `spi_master` with DMA | Low |
 | Encoder + buttons | libgpiod | GPIO ISR (or PCNT) + `esp_timer` debounce | Low |
 | Monitor audio, local | ALSA | I2S DMA to a codec/DAC, 48 kHz 24-bit stereo | Low |
-| Monitor audio, **through the TP-7** | ALSA `hw:TP7,0`, 96 kHz 6-ch | Custom **UAC2** host driver: high-speed isochronous OUT with an async feedback endpoint | **High** |
+| Monitor audio, **through the TP-7** | ALSA `hw:TP7,0`, 96 kHz 6-ch | UAC1 host streaming over a **high-bandwidth** isochronous OUT endpoint (2 × 882 bytes per microframe) with an async feedback endpoint; needs a patched host controller driver | **High** |
 
 ### Notes that change code
 
@@ -53,12 +53,45 @@ USB*, as the Pi does. The rest of the work is ordinary backend code.
 - `aw_platform_dev` stops the configure step on non-Linux hosts. It has to be
   gated when the ESP-IDF build includes the tree.
 
+## Bench results (P0, Waveshare ESP32-P4-Pico)
+
+Measured on 2026-10-14 with TP-7 OS 1.1.11, connected to the Pico's high-speed
+header through a 5-wire USB-C socket with 56 kΩ from CC to 5 V:
+
+- **Attach and enumeration work.** The TP-7 attaches at `speed HIGH (480 Mbit/s)`
+  about 0.4 s after boot. VBUS, the CC pull-up and the data wiring are fine.
+- **The mode switch works.** The USB-MIDI SysEx makes the TP-7 drop off and come
+  back as `2367:0019 'TP-7 MTP Device'` about 1.2 s later. After `CloseSession` it
+  returns to audio mode on its own about 1 s later. On one of three runs that
+  re-attach logged `E HUB: Root port reset failed` and then succeeded on the
+  library's retry. The real backend must tolerate a failed first reset.
+- **MTP works.** `OpenSession`, storage info, listing (`recordings` held 114
+  objects) and `GetPartialObject` (0x101B) all succeed. `GetPartialObject64`
+  and `GetObjectPropList` are not supported, so objects over 4 GiB cannot be read
+  by offset. TP-7 takes stay below that, because of the RIFF limit.
+- **Read throughput is 27.8–27.9 MiB/s** with 1 MiB `GetPartialObject` requests
+  and a 64 KiB IN transfer buffer. That is about 17× real time for a 12-channel
+  48 kHz take. MTP import speed will be limited by the SD card, not by USB.
+- **The TP-7 is UAC1, not UAC2.** It offers three configurations, and ESP-IDF
+  always activates the first. All three are UAC1 with the same streaming
+  interfaces: 6 channels, 24-bit in 3 bytes, a single 96 kHz rate, isochronous
+  IN `0x85` and OUT `0x06` (asynchronous, with feedback on `0x83`). Each data
+  endpoint is **high-bandwidth**: `wMaxPacketSize` = 882 with one additional
+  transaction per microframe, so 1764 bytes per 1 ms service interval. That is
+  98 frames at 96 kHz. ESP-IDF's descriptor printer drops the multiplier bits
+  and shows only 882. The probe now prints the real figure.
+
 ## The monitor-audio decision
 
 On the Pi, Bridge plays through the TP-7 as a USB sound card at 96 kHz, 6 channels.
-Doing the same on the P4 means writing a UAC2 host driver, with isochronous
-streaming and feedback-endpoint rate matching, on a USB stack that ships only UAC1
-support. Also, the TP-7 cannot be in audio mode and MTP mode at once. Two options:
+The probe shows this is UAC1, which removes the need for a UAC2 class driver. A
+different problem replaces it: the endpoint needs **two isochronous transactions
+per microframe**. ESP-IDF v5.5.1's DWC host driver (`hcd_dwc.c`) never reads the
+multiplier (`USB_EP_DESC_GET_MULT` is defined but not used). It schedules one
+transaction per interval, which is half the bandwidth this stream needs. So
+playing through the TP-7 means patching the host controller driver as well as
+writing the isochronous streaming and feedback rate matching. Also, the TP-7
+cannot be in audio mode and MTP mode at once. Two options:
 
 1. **Recommended: local I2S output** (headphone or line codec on the board).
    This is what `docs/architecture.md` already assumes ("I2S instead of ALSA"). It
@@ -66,12 +99,13 @@ support. Also, the TP-7 cannot be in audio mode and MTP mode at once. Two option
 2. **TP-7 over USB, as on the Pi.** Possible, but it is the single largest and
    riskiest work item in the port. Defer it until everything else works.
 
-The probe reports whether the TP-7 is UAC1 or UAC2 (`summary: audio=...`). That
-answer, together with which output you want, settles this decision.
+The probe settled the class question: UAC1, high-bandwidth. The recommendation
+stays local I2S, and USB monitoring stays deferred.
 
-## Why the TP-7 probably did not connect
+## If a TP-7 does not connect
 
-These are the usual causes, most likely first. Each is explained in
+On the bench the TP-7 connected on the first attempt (see above). When it does
+not, these are the usual causes, most likely first. Each is explained in
 `firmware/esp32p4/tp7-probe/README.md`:
 
 1. No 5 V VBUS on the P4's host socket, which some boards gate behind a GPIO or a
@@ -88,9 +122,9 @@ Each step ends with something to run on the bench, the same way the Pi phases di
 
 | Step | Delivers | Bench acceptance |
 | --- | --- | --- |
-| **P0 — USB probe** (done) | `firmware/esp32p4/tp7-probe` | TP-7 enumerates at high speed, switches to MTP, session opens, read throughput measured |
+| **P0 — USB probe** (done, passed on the bench) | `firmware/esp32p4/tp7-probe` | TP-7 enumerates at high speed, switches to MTP, session opens, read throughput measured |
 | P1 — Firmware skeleton | ESP-IDF project in `firmware/esp32p4/bridge` building all portable layers as a component; `AW_PLATFORM=esp32p4`; null backends; `app_main` composition root | Boots; UI renders to the serial log |
 | P2 — Storage, display, input | `FatFsStorage`, SSD1306 over `esp_lcd`, encoder/buttons over GPIO | Create/open/save projects; navigate the UI on the OLED |
 | P3 — Audio out | `I2sAudioOutput` (48 kHz, 24-bit, 256-frame periods) | Six-lane playback with no xruns over a long session |
 | P4 — MTP | `EspUsbHost`, `EspMtpDevice`, `Tp7UsbMidiModeSwitcher`, built from the probe | Phase 8 acceptance (`docs/phase8-tp7-test.md`) on the P4 |
-| Later | UAC2 monitoring through the TP-7, if still wanted | — |
+| Later | UAC1 high-bandwidth monitoring through the TP-7, if still wanted | — |

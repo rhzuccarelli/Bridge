@@ -131,6 +131,43 @@ esp_err_t BulkPipe::read(std::size_t wanted, std::size_t& received, std::uint32_
     return err;
 }
 
+esp_err_t readConfigDescriptor(usb_host_client_handle_t client, usb_device_handle_t device,
+                               std::uint8_t index, std::vector<std::uint8_t>& descriptor) {
+    constexpr std::uint16_t kMaxBytes = 2048;
+    descriptor.clear();
+    SemaphoreHandle_t done = xSemaphoreCreateBinary();
+    if (done == nullptr) return ESP_ERR_NO_MEM;
+    usb_transfer_t* transfer = nullptr;
+    esp_err_t err = usb_host_transfer_alloc(USB_SETUP_PACKET_SIZE + kMaxBytes, 0, &transfer);
+    if (err == ESP_OK) {
+        auto* setup = reinterpret_cast<usb_setup_packet_t*>(transfer->data_buffer);
+        USB_SETUP_PACKET_INIT_GET_CONFIG_DESC(setup, index, kMaxBytes);
+        transfer->num_bytes = USB_SETUP_PACKET_SIZE + kMaxBytes;
+        transfer->device_handle = device;
+        transfer->bEndpointAddress = 0;
+        transfer->callback = [](usb_transfer_t* t) {
+            xSemaphoreGive(static_cast<SemaphoreHandle_t>(t->context));
+        };
+        transfer->context = done;
+        err = usb_host_transfer_submit_control(client, transfer);
+        if (err == ESP_OK) {
+            // Control transfers are short; the device answers or the library
+            // retires the transfer with an error.
+            xSemaphoreTake(done, portMAX_DELAY);
+            if (transfer->status != USB_TRANSFER_STATUS_COMPLETED ||
+                transfer->actual_num_bytes < USB_SETUP_PACKET_SIZE + 4) {
+                err = ESP_FAIL;
+            } else {
+                const std::uint8_t* bytes = transfer->data_buffer + USB_SETUP_PACKET_SIZE;
+                descriptor.assign(bytes, bytes + transfer->actual_num_bytes - USB_SETUP_PACKET_SIZE);
+            }
+        }
+        usb_host_transfer_free(transfer);
+    }
+    vSemaphoreDelete(done);
+    return err;
+}
+
 const char* transferStatusName(usb_transfer_status_t status) {
     switch (status) {
         case USB_TRANSFER_STATUS_COMPLETED: return "completed";

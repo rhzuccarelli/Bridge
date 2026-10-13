@@ -8,7 +8,12 @@ It does, in order:
 
 1. Installs the USB host stack on the **high-speed** port.
 2. Prints every attached device's speed and full descriptors.
-3. Summarises what it found: UAC1 or UAC2 audio, MIDI OUT, MTP.
+3. Summarises what it found: UAC1 or UAC2 audio, MIDI OUT, MTP. ESP-IDF only
+   activates a device's first configuration. When a device offers several, the
+   probe reads every one with `GET_DESCRIPTOR` and prints each audio streaming
+   format: channels, bit depth, rates, bytes per service interval. It flags
+   high-bandwidth endpoints, whose extra transactions ESP-IDF's own descriptor
+   dump leaves out.
 4. If it sees a TP-7 in USB-audio mode, it sends the same SysEx the Pi build sends,
    as raw USB-MIDI packets, to switch the TP-7 into MTP mode. It does this once per
    boot.
@@ -99,7 +104,20 @@ The full monitor log from boot until the line `closing MTP session`. Pay most
 attention to these lines:
 
 - `speed HIGH` or `FULL`
-- `summary: audio=UAC2 ...` (decides the USB monitor-audio path; see
+- `summary (active configuration 1): audio=...` and the `configuration N of M`
+  lines that follow it (they decide the USB monitor-audio path; see
   `docs/esp32p4-port.md`)
 - `GetPartialObject 0x101B: yes/NO`
 - `Read N MiB ... = X MiB/s`
+
+## Reference result
+
+On a Waveshare ESP32-P4-Pico with a TP-7 on OS 1.1.11, the probe passes every step:
+`speed HIGH`, the switch to MTP, `MTP session open`, `GetPartialObject 0x101B:
+yes`, and `Read 16.0 MiB ... = 27.9 MiB/s`. All three TP-7 configurations are UAC1:
+6 channels, 24-bit, 96 kHz, on high-bandwidth isochronous endpoints. The full
+analysis is in `docs/esp32p4-port.md`.
+
+To capture a log without `idf.py monitor`, open the port with pyserial at
+115200 baud, set DTR low, pulse RTS high for 200 ms to reset the board, and read
+for about 40 s.
