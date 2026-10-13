@@ -10,6 +10,7 @@
 #include "aw/platform/esp32p4/EspGpioInput.hpp"
 #include "aw/platform/esp32p4/EspSpiOledBus.hpp"
 #include "aw/platform/esp32p4/EspUsb.hpp"
+#include "aw/platform/esp32p4/FatFsStorage.hpp"
 #include "aw/platform/esp32p4/SerialPreviewDisplay.hpp"
 #include "esp_timer.h"
 
@@ -31,7 +32,8 @@ public:
     }
 };
 
-/// An empty volume: the projects root exists and lists nothing; anything that
+/// Stands in when no SD card mounts. An empty volume: the projects root exists
+/// and lists nothing; anything that
 /// would read or write a file fails as "not connected". The UI shows an empty
 /// project list, which is what it shows for a blank card anyway.
 class NoCardStorage final : public hal::StorageInterface {
@@ -71,7 +73,15 @@ private:
 core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     hal::Platform platform;
     platform.clock = std::make_unique<EspClock>();
-    platform.storage = std::make_unique<NoCardStorage>(config.projectsRoot);
+    if (auto card = FatFsStorage::mount(config.sdCard, config.projectsRoot); card) {
+        if (auto status = card.value()->createDirectories(config.projectsRoot); !status) {
+            core::log::warning(kModule, "cannot create projects folder: " + status.error().describe());
+        }
+        platform.storage = std::move(card).value();
+    } else {
+        core::log::warning(kModule, card.error().describe() + "; running without storage");
+        platform.storage = std::make_unique<NoCardStorage>(config.projectsRoot);
+    }
     platform.display = std::make_unique<SerialPreviewDisplay>(
         config.previewIntervalMillis,
         config.oled.sck >= 0 ? std::make_unique<EspSpiOledBus>(config.oled) : nullptr);
@@ -88,7 +98,7 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
         return core::makeError(core::ErrorCode::Unknown, "esp32p4 platform incomplete");
     }
     core::log::info(kModule, "platform ready: SPI OLED (mirrored to serial), GPIO encoder "
-                             "and buttons, USB host with TP-7 MTP; null storage and audio");
+                             "and buttons, USB host with TP-7 MTP, SD card storage; null audio");
     return platform;
 }
 

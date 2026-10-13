@@ -31,8 +31,11 @@ std::recursive_mutex& consoleMutex() {
 void consoleWrite(std::string_view text) {
     const std::lock_guard lock{consoleMutex()};
     std::fflush(stdout);
+    // stdout's descriptor, not STDOUT_FILENO: ESP-IDF opens /dev/console for
+    // stdout at startup and the number it gets is not guaranteed to be 1.
+    const int fd = fileno(stdout);
     for (std::size_t sent = 0; sent < text.size();) {
-        const ssize_t n = ::write(STDOUT_FILENO, text.data() + sent, text.size() - sent);
+        const ssize_t n = ::write(fd, text.data() + sent, text.size() - sent);
         if (n <= 0) break;
         sent += static_cast<std::size_t>(n);
     }

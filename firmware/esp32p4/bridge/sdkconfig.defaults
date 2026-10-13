@@ -29,3 +29,7 @@ CONFIG_COMPILER_CXX_EXCEPTIONS=n
 # larger than the 256-byte default; enumeration fails outright with it.
 CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048
 CONFIG_USB_HOST_HUBS_SUPPORTED=y
+
+# TP-7 take names and project files need long file names on the SD card.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255

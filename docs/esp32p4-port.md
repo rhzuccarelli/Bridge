@@ -141,6 +141,25 @@ The same 7-pin SSD1306 module as the Pi's is wired with SCK on GPIO6, SDA
 capture shows what the panel shows. Storage (FatFS on SD) is the remaining P2
 item.
 
+## P2 progress: SD card
+
+`FatFsStorage` mounts the card at `/sdcard`, through SDMMC on the P4 reference
+pins and powered from LDO VO4. It never formats the card. On the bench it
+mounted a 64 GB SanDisk card at 20 MHz. FatFS cannot rename onto an existing
+file, so `rename()` replaces a file in three steps: move the target to
+`.old`, move the new file in, delete `.old`. Any later access to that path
+completes or rolls back an interrupted replace, so a power cut during a save
+leaves either the new `metadata.json` or the previous one, never neither.
+Because newlib's file offsets are 32-bit, a single file can be seeked only
+within its first 2 GiB.
+
+`StdioFile`, the `FILE*`-backed `hal::FileHandle`, moved from `PosixStorage`
+to `aw/platform/StdioFile.hpp` so both backends share it.
+
+Console writes now use `fileno(stdout)` rather than fd 1. With FatFS linked
+in, `/dev/console` no longer had descriptor 1, and every log line silently
+went nowhere.
+
 ## P4 progress: TP-7 mode switch and MTP
 
 Opening Import or Export on the P4 now switches the TP-7 into MTP mode on its
