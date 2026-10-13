@@ -7,6 +7,7 @@
 
 #include "aw/core/Logger.hpp"
 #include "aw/platform/NullAudioOutput.hpp"
+#include "aw/platform/esp32p4/EspGpioInput.hpp"
 #include "aw/platform/esp32p4/SerialPreviewDisplay.hpp"
 #include "esp_timer.h"
 
@@ -73,22 +74,6 @@ public:
     }
 };
 
-class NoButtons final : public hal::ButtonInterface {
-public:
-    void setListener(hal::ButtonListener* /*listener*/) noexcept override {}
-    core::Status start() override { return core::success(); }
-    void stop() noexcept override {}
-    bool isPressed(core::ButtonId /*id*/) const noexcept override { return false; }
-};
-
-class NoEncoder final : public hal::EncoderInterface {
-public:
-    void setListener(hal::EncoderListener* /*listener*/) noexcept override {}
-    core::Status start() override { return core::success(); }
-    void stop() noexcept override {}
-    std::int32_t consumeDelta() noexcept override { return 0; }
-};
-
 }  // namespace
 
 core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
@@ -96,8 +81,8 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     platform.clock = std::make_unique<EspClock>();
     platform.storage = std::make_unique<NoCardStorage>(config.projectsRoot);
     platform.display = std::make_unique<SerialPreviewDisplay>(config.previewIntervalMillis);
-    platform.buttons = std::make_unique<NoButtons>();
-    platform.encoder = std::make_unique<NoEncoder>();
+    platform.buttons = std::make_unique<EspGpioButtons>(config.pins);
+    platform.encoder = std::make_unique<EspGpioEncoder>(config.pins);
     platform.audioOutput = std::make_unique<NullAudioOutput>();
     platform.audioInput = nullptr;
     platform.usb = std::make_unique<NoUsb>();
@@ -107,8 +92,8 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     if (!platform.isComplete()) {
         return core::makeError(core::ErrorCode::Unknown, "esp32p4 platform incomplete");
     }
-    core::log::info(kModule, "skeleton platform ready: serial display preview, null storage, "
-                             "input, audio and USB");
+    core::log::info(kModule, "platform ready: GPIO encoder and buttons, serial display "
+                             "preview, null storage, audio and USB");
     return platform;
 }
 

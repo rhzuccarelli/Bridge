@@ -123,6 +123,16 @@ shared code were needed:
 - `AwCompilerOptions` warning flags are now C++-only, and `AW_INCLUDE_DIR` no
   longer assumes the repository is the top-level CMake project.
 
+## P2 progress: input
+
+The KY-040 is wired to the Pico with CLK on GPIO16, DT on GPIO15, SW on GPIO17,
+and + on 3.3 V. A pin-finder firmware identified the pins on the bench: CLK
+leads DT on clockwise turns. `EspGpioEncoder` and `EspGpioButtons` sample the
+pins at 1 kHz from a priority-10 task. They reuse the Pi's `QuadratureDecoder`
+and `ButtonStateMachine`, which now live in `aw/platform/InputDecoding.hpp`.
+On the board, one clockwise click moved the home-screen highlight from
+TRANSPORT to TRACKS, and a press opened the Tracks screen.
+
 ## If a TP-7 does not connect
 
 On the bench the TP-7 connected on the first attempt (see above). When it does

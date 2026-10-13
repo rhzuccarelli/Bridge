@@ -21,6 +21,7 @@ if(AW_PLATFORM STREQUAL "esp32p4")
     add_library(aw_platform STATIC
         NullAudioOutput.cpp
         esp32p4/Esp32P4Platform.cpp
+        esp32p4/EspGpioInput.cpp
         esp32p4/SerialPreviewDisplay.cpp
         oled/Ssd1306Display.cpp)
     add_library(aw::platform ALIAS aw_platform)
@@ -28,7 +29,12 @@ if(AW_PLATFORM STREQUAL "esp32p4")
     target_include_directories(aw_platform PUBLIC ${AW_INCLUDE_DIR})
     target_link_libraries(aw_platform
         PUBLIC aw::core aw::hal aw::compiler_options
-        PRIVATE idf::esp_timer idf::pthread)
+        PRIVATE idf::esp_timer idf::esp_driver_gpio idf::pthread)
+    # ESP-IDF register headers use GNU statement expressions, and FreeRTOS
+    # macros expand to C casts in our own code. Per source file, because those
+    # options come after aw::compiler_options on the command line.
+    set_source_files_properties(esp32p4/EspGpioInput.cpp esp32p4/Esp32P4Platform.cpp
+        PROPERTIES COMPILE_OPTIONS "-Wno-pedantic;-Wno-old-style-cast")
     return()
 endif()
 
