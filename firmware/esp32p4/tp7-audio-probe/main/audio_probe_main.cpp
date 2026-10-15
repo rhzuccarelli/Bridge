@@ -244,20 +244,24 @@ void setSampleRate(usb_host_client_handle_t client, usb_device_handle_t device,
 
 // ------------------------------------------------------- host channel registers
 
-/// One way of programming the playback channel. The probe cycles through
-/// these, each with its own tone, so one listening pass shows which works.
+/// How packets are sized. The probe cycles through these, each with its own
+/// tone, so one listening pass compares them. ESP-IDF lays a transfer's
+/// packets back to back in its buffer, and a TP-7 frame is 18 bytes: an odd
+/// frame count leaves every later packet off 4-byte alignment for the DMA.
+enum class Sizing {
+    Feedback,      ///< Exactly what the feedback asks for, odd counts included.
+    FeedbackEven,  ///< Follows the feedback in steps of 2 frames: always aligned.
+    Fixed,         ///< 96 frames every packet: aligned, ignores the feedback.
+};
 struct Variant {
     const char* name;
     int toneHz;
-    std::uint32_t pid;  ///< HCTSIZ.PID: 0 DATA0, 1 DATA2, 2 DATA1, 3 MDATA.
-    /// Which half of each 1 ms packet carries the tone (bit 0 frames 0-47,
-    /// bit 1 the rest); the other half is silence.
-    unsigned transactionsWithTone;
+    Sizing sizing;
 };
 constexpr Variant kVariants[] = {
-    {"tone in frames 0-47 of each packet only", 440, 3, 1},
-    {"tone in frames 48-95 of each packet only", 880, 3, 2},
-    {"reference: 2000 Hz in every frame", 2000, 3, 3},
+    {"packets follow feedback exactly (odd sizes allowed)", 440, Sizing::Feedback},
+    {"packets follow feedback in even sizes (always aligned)", 660, Sizing::FeedbackEven},
+    {"packets fixed at 96 frames (aligned, no rate matching)", 880, Sizing::Fixed},
 };
 constexpr int kVariantSeconds = 8;
 int g_variant = 0;
@@ -267,6 +271,7 @@ std::uint8_t g_address = 0;
 constexpr std::uint32_t kPidData0 = 0;
 constexpr std::uint32_t kPidData2 = 1;
 constexpr std::uint32_t kPidData1 = 2;
+constexpr std::uint32_t kPidMData = 3;
 
 /// Programs HCCHAR.EC/MC ("transactions per microframe") on the host channel
 /// that ESP-IDF allocated for this endpoint, and the starting data PID that
@@ -289,7 +294,7 @@ int setTransactionsPerMicroframe(std::uint8_t deviceAddress, std::uint8_t endpoi
             continue;
         std::uint32_t pid = kPidData0;
         if (transactions > 1)
-            pid = isIn ? (transactions == 2 ? kPidData1 : kPidData2) : kVariants[g_variant].pid;
+            pid = isIn ? (transactions == 2 ? kPidData1 : kPidData2) : kPidMData;
         usb_dwc_hctsiz_reg_t hctsiz;
         hctsiz.val = channel.hctsiz_reg.val;
         ESP_LOGI(kTag, "host channel %d (ep 0x%02x): EC %u -> %d, PID %u -> %u", index, endpoint,
@@ -316,6 +321,7 @@ struct Stats {
     std::atomic<std::uint32_t> feedbackRaw{0};
     std::atomic<std::uint32_t> feedbackPackets{0};
     std::atomic<std::uint32_t> feedbackErrors{0};
+    std::atomic<std::uint32_t> oddPackets{0};  ///< Odd frame count: next packet misaligned.
     std::atomic<std::uint32_t> lastFeedbackStatus{USB_TRANSFER_STATUS_COMPLETED};
     std::atomic<std::uint32_t> lastFeedbackBytes{0};
     /// Microframes between playback completions since the last report.
@@ -326,7 +332,7 @@ struct Stats {
 
     void reset() {
         for (auto* counter : {&urbs, &packets, &badPackets, &badUrbs, &feedbackRaw,
-                              &feedbackPackets, &feedbackErrors})
+                              &feedbackPackets, &feedbackErrors, &oddPackets})
             counter->store(0);
         lastBadStatus.store(USB_TRANSFER_STATUS_COMPLETED);
         lastFeedbackStatus.store(USB_TRANSFER_STATUS_COMPLETED);
@@ -394,15 +400,19 @@ int fillPlayback(Stream& stream, usb_transfer_t* transfer) {
         const std::uint32_t due =
             stream.remainderQ16 + stream.rateQ16.load(std::memory_order_relaxed);
         int frames = static_cast<int>(due >> 16);
-        stream.remainderQ16 = due & 0xFFFF;
+        switch (kVariants[g_variant].sizing) {
+            case Sizing::Feedback: break;
+            case Sizing::FeedbackEven: frames &= ~1; break;
+            case Sizing::Fixed: frames = static_cast<int>(kSampleRate / 1000); break;
+        }
         frames = std::clamp(frames, 1, maxFrames);
-        const int firstHalfFrames = kSampleRate / 2000;
+        // What was not sent this packet is owed to the next one.
+        stream.remainderQ16 = kVariants[g_variant].sizing == Sizing::Fixed
+                                  ? 0
+                                  : due - (static_cast<std::uint32_t>(frames) << 16);
+        if ((frames & 1) != 0) stream.stats.oddPackets.fetch_add(1, std::memory_order_relaxed);
         for (int frame = 0; frame < frames; ++frame) {
-            const unsigned transactionBit = frame < firstHalfFrames ? 1U : 2U;
-            const float gate =
-                (kVariants[g_variant].transactionsWithTone & transactionBit) != 0 ? 1.0F : 0.0F;
-            const float value =
-                gate * stream.amplitude * static_cast<float>(std::sin(stream.phase));
+            const float value = stream.amplitude * static_cast<float>(std::sin(stream.phase));
             stream.phase += stream.phaseStep;
             if (stream.phase > 2.0 * M_PI) stream.phase -= 2.0 * M_PI;
             const auto sample = static_cast<std::int32_t>(std::lrint(value * 8388607.0F));
@@ -635,7 +645,7 @@ void report(std::uint64_t& lastFrames, std::uint32_t& lastPackets, std::int64_t&
              "%" PRIu32 " packets/s, %.0f frames/s queued | bad packets %" PRIu32
              ", bad transfers %" PRIu32 " (last: %s) | feedback 0x%08" PRIx32
              " = %.4f frames/ms (%s), %" PRIu32 " reports, %" PRIu32 " errors (last: %s, %" PRIu32
-             " bytes)",
+             " bytes) | odd-sized packets %" PRIu32,
              static_cast<std::uint32_t>((packets - lastPackets) / seconds),
              static_cast<double>(frames - lastFrames) / seconds,
              stats.badPackets.load(std::memory_order_relaxed),
@@ -648,7 +658,8 @@ void report(std::uint64_t& lastFrames, std::uint32_t& lastPackets, std::int64_t&
              stats.feedbackErrors.load(std::memory_order_relaxed),
              probe::transferStatusName(static_cast<usb_transfer_status_t>(
                  stats.lastFeedbackStatus.load(std::memory_order_relaxed))),
-             stats.lastFeedbackBytes.load(std::memory_order_relaxed));
+             stats.lastFeedbackBytes.load(std::memory_order_relaxed),
+             stats.oddPackets.load(std::memory_order_relaxed));
     ESP_LOGI(kTag, "  completion gap %" PRIu32 "-%" PRIu32 " uframes, %" PRIu32 "-%" PRIu32
                    " frames per packet",
              stats.minGap.exchange(UINT32_MAX), stats.maxGap.exchange(0),

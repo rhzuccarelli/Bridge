@@ -14,9 +14,9 @@ When a TP-7 attaches in USB-audio mode, the probe:
    host channel's multi-count (`HCCHAR.EC`) to 2 and its starting data PID to
    `MDATA` (see "Why the register writes").
 3. Sets the endpoint's sampling frequency to 96 kHz (UAC1 `SET_CUR`).
-4. Streams a 1 kHz sine at −18 dBFS on channels 1–2 (silence on 3–6) for
-   60 s. Packet sizes follow the feedback endpoint when it reports, and stay at
-   96 frames per millisecond otherwise.
+4. Streams a sine at −18 dBFS on channels 1–2 (silence on 3–6) for 60 s,
+   cycling through the packet-sizing variants under "Listening test: packet
+   alignment".
 5. Logs once a second: packets/s, frames/s, failed packets, and the
    feedback value with the encoding it was read as.
 
@@ -75,3 +75,27 @@ replug the TP-7 to run again.
 - Before `SET_INTERFACE` was added, the tone was silent and every feedback
   packet failed. That was the TP-7 sitting on alternate 0, not a host
   controller fault.
+- **Listening test, first pass: the tone is audible but has heavy
+  artifacts.** That pass gated the tone to one half of each packet, which
+  buzzes at 1 kHz by itself, so only its continuous 2 kHz reference counts,
+  and that one was not clean either.
+
+## Listening test: packet alignment
+
+ESP-IDF places each packet of a transfer straight after the previous one in
+the data buffer (`_buffer_fill_isoc`). A TP-7 frame is 18 bytes, so a packet
+with an odd frame count (95 or 97, whenever the feedback is not exactly
+96.000) leaves every later packet in that transfer off 4-byte alignment. The
+suspicion is that the DWC controller's DMA does not handle that. The probe now
+cycles, 8 s each, through three continuous tones:
+
+| Tone | Packet sizes | Aligned? |
+| --- | --- | --- |
+| 440 Hz | exactly what the feedback asks for | no, when a count is odd |
+| 660 Hz | the feedback rate in steps of 2 frames | always |
+| 880 Hz | 96 frames, feedback ignored | always |
+
+The once-a-second log line ends with `odd-sized packets`, a running count. If
+440 Hz is rough while 660 Hz and 880 Hz are clean, alignment is the cause, and
+the backend sizes packets in steps of 2 frames. If all three are rough, the
+cause is elsewhere, most likely the second transaction of each microframe.

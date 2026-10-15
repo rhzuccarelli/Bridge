@@ -134,6 +134,11 @@ from the caller, none of which needs a patched ESP-IDF:
 On the bench, playback runs at 1000 packets/s and 96 000 frames/s with no
 failed packets, and feedback arrives with no errors.
 
+The first listening test heard the tone with heavy artifacts. The suspect is
+packet alignment: ESP-IDF packs a transfer's packets back to back, and an odd
+number of 18-byte frames leaves the next packet off 4-byte alignment. The
+probe now compares exact, even-only and fixed packet sizes (see its README).
+
 ## P1 result
 
 `firmware/esp32p4/bridge` builds every portable layer unchanged, through the
