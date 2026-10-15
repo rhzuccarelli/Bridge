@@ -106,3 +106,23 @@ second. If 550 Hz and 660 Hz are as clean as 880 Hz, varying sizes are fine
 and the problem is how the probe follows the feedback (the log range shows
 how much it jitters). If they are as rough as 440 Hz, any change in packet
 size breaks the stream, on the host or in the TP-7.
+
+### Third pass (2026-10-15): none of the variants sound good
+
+- Packet sizing is ruled out. In this run feedback never arrived, so the
+  "follow feedback" variant sent the same fixed 96-frame stream as the 880 Hz
+  one, and both sounded rough.
+- The host does send every byte. ESP-IDF reports each OUT packet as fully
+  sent (`sent 1728-1728 bytes`, no short packets), and `HCCHAR.EC` stays 2
+  while streaming. Isochronous OUT has no handshake, so this cannot show
+  whether the TP-7 accepts the second transaction of each microframe.
+- The TP-7 answers every feedback poll with a zero-length packet: about 900
+  per second, all "completed", none with data. The DMA never writes the
+  buffer. The earlier note above, of 3-byte Q10.14 feedback, is not
+  reproducible now.
+
+Next: compare against Linux, where the TP-7 plays correctly. On the Pi,
+check which configuration Linux selects (`bConfigurationValue`; ESP-IDF
+always takes the first of the TP-7's three), and capture the USB traffic of a
+short playback with usbmon for the exact request sequence, packet sizes and
+feedback values.

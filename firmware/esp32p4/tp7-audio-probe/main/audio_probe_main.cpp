@@ -270,6 +270,7 @@ constexpr Variant kVariants[] = {
 constexpr int kVariantSeconds = 8;
 int g_variant = 0;
 std::uint8_t g_address = 0;
+int g_playbackChannel = -1;  ///< DWC host channel of the playback endpoint.
 
 /// HCTSIZ.PID encodings.
 constexpr std::uint32_t kPidData0 = 0;
@@ -329,6 +330,18 @@ struct Stats {
     /// Feedback values seen since the last report: how much the TP-7 jitters.
     std::atomic<std::uint32_t> feedbackMin{UINT32_MAX};
     std::atomic<std::uint32_t> feedbackMax{0};
+    /// Bytes the controller reports as actually sent per OUT packet (requested
+    /// minus what DMA left over). A status of "completed" alone does not show
+    /// whether the second transaction of a microframe went out.
+    std::atomic<std::uint32_t> sentMin{UINT32_MAX};
+    std::atomic<std::uint32_t> sentMax{0};
+    std::atomic<std::uint32_t> shortPackets{0};
+    std::atomic<std::uint32_t> feedbackTransfers{0};
+    std::atomic<std::uint32_t> feedbackEmpty{0};  ///< Completed with under 3 bytes.
+    /// First bytes of an "empty" feedback packet. The buffer is filled with
+    /// 0xEE before each submit, so anything else means data did arrive and
+    /// only the reported length is wrong.
+    std::atomic<std::uint32_t> emptyPacketBytes{0xEEEEEEEE};
     std::atomic<std::uint32_t> lastFeedbackStatus{USB_TRANSFER_STATUS_COMPLETED};
     std::atomic<std::uint32_t> lastFeedbackBytes{0};
     /// Microframes between playback completions since the last report.
@@ -339,7 +352,8 @@ struct Stats {
 
     void reset() {
         for (auto* counter : {&urbs, &packets, &badPackets, &badUrbs, &feedbackRaw,
-                              &feedbackPackets, &feedbackErrors, &oddPackets})
+                              &feedbackPackets, &feedbackErrors, &oddPackets, &shortPackets,
+                              &feedbackTransfers, &feedbackEmpty})
             counter->store(0);
         lastBadStatus.store(USB_TRANSFER_STATUS_COMPLETED);
         lastFeedbackStatus.store(USB_TRANSFER_STATUS_COMPLETED);
@@ -470,6 +484,13 @@ void playbackDone(usb_transfer_t* transfer) {
     for (int packet = 0; packet < transfer->num_isoc_packets; ++packet) {
         const usb_isoc_packet_desc_t& desc = transfer->isoc_packet_desc[packet];
         stats.packets.fetch_add(1, std::memory_order_relaxed);
+        const auto sent = static_cast<std::uint32_t>(desc.actual_num_bytes);
+        if (sent < stats.sentMin.load(std::memory_order_relaxed))
+            stats.sentMin.store(sent, std::memory_order_relaxed);
+        if (sent > stats.sentMax.load(std::memory_order_relaxed))
+            stats.sentMax.store(sent, std::memory_order_relaxed);
+        if (desc.actual_num_bytes < desc.num_bytes)
+            stats.shortPackets.fetch_add(1, std::memory_order_relaxed);
         if (desc.status != USB_TRANSFER_STATUS_COMPLETED) {
             stats.badPackets.fetch_add(1, std::memory_order_relaxed);
             stats.lastBadStatus.store(desc.status, std::memory_order_relaxed);
@@ -486,11 +507,19 @@ void playbackDone(usb_transfer_t* transfer) {
 void feedbackDone(usb_transfer_t* transfer) {
     Stream& stream = *static_cast<Stream*>(transfer->context);
     const int stride = stream.playback.feedbackMaxPacket;
+    stream.stats.feedbackTransfers.fetch_add(1, std::memory_order_relaxed);
     for (int packet = 0; packet < transfer->num_isoc_packets; ++packet) {
         const usb_isoc_packet_desc_t& desc = transfer->isoc_packet_desc[packet];
         stream.stats.lastFeedbackBytes.store(static_cast<std::uint32_t>(desc.actual_num_bytes),
                                              std::memory_order_relaxed);
         if (desc.status != USB_TRANSFER_STATUS_COMPLETED || desc.actual_num_bytes < 3) {
+            if (desc.status == USB_TRANSFER_STATUS_COMPLETED) {
+                stream.stats.feedbackEmpty.fetch_add(1, std::memory_order_relaxed);
+                const std::uint8_t* b = transfer->data_buffer + packet * stride;
+                stream.stats.emptyPacketBytes.store(
+                    b[0] | (b[1] << 8) | (b[2] << 16) | (static_cast<std::uint32_t>(b[3]) << 24),
+                    std::memory_order_relaxed);
+            }
             if (desc.status != USB_TRANSFER_STATUS_COMPLETED) {
                 stream.stats.feedbackErrors.fetch_add(1, std::memory_order_relaxed);
                 stream.stats.lastFeedbackStatus.store(desc.status, std::memory_order_relaxed);
@@ -508,6 +537,7 @@ void feedbackDone(usb_transfer_t* transfer) {
         stream.stats.feedbackPackets.fetch_add(1, std::memory_order_relaxed);
         applyFeedback(stream, raw);
     }
+    std::memset(transfer->data_buffer, 0xEE, static_cast<std::size_t>(transfer->num_bytes));
     if (stream.running.load(std::memory_order_acquire) &&
         transfer->status != USB_TRANSFER_STATUS_NO_DEVICE &&
         usb_host_transfer_submit(transfer) == ESP_OK)
@@ -546,7 +576,9 @@ bool startStream(usb_host_client_handle_t client, usb_device_handle_t device,
     }
 
     if (kHighBandwidth && playback.transactions > 1) {
-        if (setTransactionsPerMicroframe(address, playback.endpoint, playback.transactions) < 0)
+        g_playbackChannel =
+            setTransactionsPerMicroframe(address, playback.endpoint, playback.transactions);
+        if (g_playbackChannel < 0)
             ESP_LOGE(kTag, "no idle host channel matches ep 0x%02x; multi-count not set",
                      playback.endpoint);
     } else if (playback.transactions > 1) {
@@ -588,6 +620,8 @@ bool startStream(usb_host_client_handle_t client, usb_device_handle_t device,
             stream.feedback->num_bytes = playback.feedbackMaxPacket * packets;
             for (int i = 0; i < packets; ++i)
                 stream.feedback->isoc_packet_desc[i].num_bytes = playback.feedbackMaxPacket;
+            std::memset(stream.feedback->data_buffer, 0xEE,
+                        static_cast<std::size_t>(stream.feedback->num_bytes));
         }
     } else if (playback.feedbackEndpoint != 0) {
         ESP_LOGW(kTag, "feedback ep 0x%02x interval %d uframes does not fit one transfer; "
@@ -681,6 +715,20 @@ void report(std::uint64_t& lastFrames, std::uint32_t& lastPackets, std::int64_t&
              stats.minGap.exchange(UINT32_MAX), stats.maxGap.exchange(0),
              stats.minFrames.exchange(UINT32_MAX), stats.maxFrames.exchange(0),
              stats.feedbackMin.exchange(UINT32_MAX), stats.feedbackMax.exchange(0));
+    std::uint32_t ec = 0;
+    if (g_playbackChannel >= 0) {
+        usb_dwc_hcchar_reg_t hcchar;
+        hcchar.val = USB_DWC_HS.host_chans[g_playbackChannel].hcchar_reg.val;
+        ec = hcchar.ec;
+    }
+    ESP_LOGI(kTag, "  sent %" PRIu32 "-%" PRIu32 " bytes per packet, %" PRIu32
+                   " short packets | playback channel EC now %" PRIu32 " | feedback: %" PRIu32
+                   " transfers back, %" PRIu32 " empty packets (buffer 0x%08" PRIx32 ")",
+             stats.sentMin.exchange(UINT32_MAX), stats.sentMax.exchange(0),
+             stats.shortPackets.load(std::memory_order_relaxed), ec,
+             stats.feedbackTransfers.load(std::memory_order_relaxed),
+             stats.feedbackEmpty.load(std::memory_order_relaxed),
+             stats.emptyPacketBytes.load(std::memory_order_relaxed));
     lastFrames = frames;
     lastPackets = packets;
     lastTime = now;
