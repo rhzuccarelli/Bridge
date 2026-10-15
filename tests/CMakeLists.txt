@@ -49,7 +49,8 @@ add_test(NAME unit COMMAND aw_tests)
 add_executable(aw_platform_tests
     framework/Test.cpp
     platform/OledTests.cpp
-    platform/PlatformTests.cpp)
+    platform/PlatformTests.cpp
+    platform/Tp7MonitorTests.cpp)
 
 target_include_directories(aw_platform_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(aw_platform_tests PRIVATE
