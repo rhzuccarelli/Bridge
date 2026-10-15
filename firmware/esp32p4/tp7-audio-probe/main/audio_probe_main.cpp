@@ -159,7 +159,8 @@ esp_err_t controlTransfer(usb_host_client_handle_t client, usb_device_handle_t d
     SemaphoreHandle_t done = xSemaphoreCreateBinary();
     if (done == nullptr) return ESP_ERR_NO_MEM;
     usb_transfer_t* transfer = nullptr;
-    esp_err_t err = usb_host_transfer_alloc(USB_SETUP_PACKET_SIZE + 64, 0, &transfer);
+    esp_err_t err = usb_host_transfer_alloc(USB_SETUP_PACKET_SIZE + std::max<std::size_t>(64, setup.wLength), 0,
+                                             &transfer);
     if (err == ESP_OK) {
         std::memcpy(transfer->data_buffer, &setup, USB_SETUP_PACKET_SIZE);
         const bool isIn = (setup.bmRequestType & USB_BM_REQUEST_TYPE_DIR_IN) != 0;
@@ -239,6 +240,50 @@ void setSampleRate(usb_host_client_handle_t client, usb_device_handle_t device,
                  rate[0] | (rate[1] << 8) | (rate[2] << 16));
     } else {
         ESP_LOGI(kTag, "sampling frequency set (GET_CUR: %s)", probe::transferStatusName(status));
+    }
+}
+
+/// Logs every configuration descriptor the device offers, in hex, and the
+/// configuration currently active. ESP-IDF always activates the first one;
+/// the dump lets the three be compared off-line.
+void dumpConfigurations(usb_host_client_handle_t client, usb_device_handle_t device,
+                        int count) {
+    usb_transfer_status_t status = USB_TRANSFER_STATUS_COMPLETED;
+    usb_setup_packet_t setup{};
+    setup.bmRequestType = 0x80;  // Device to host, standard, device.
+    setup.bRequest = 0x08;       // GET_CONFIGURATION
+    setup.wLength = 1;
+    std::uint8_t active = 0;
+    if (controlTransfer(client, device, setup, &active, status) == ESP_OK)
+        ESP_LOGI(kTag, "DESC active configuration value %u of %d", active, count);
+    // Control transfers are capped by CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE.
+    constexpr std::size_t kMax = CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE - USB_SETUP_PACKET_SIZE;
+    std::vector<std::uint8_t> bytes(kMax);
+    for (int index = 0; index < count; ++index) {
+        for (const std::size_t wanted : {std::size_t{9}, std::size_t{0}}) {
+            const std::size_t length =
+                wanted != 0 ? wanted : std::min<std::size_t>(kMax, bytes[2] | (bytes[3] << 8));
+            setup = {};
+            setup.bmRequestType = 0x80;
+            setup.bRequest = 0x06;  // GET_DESCRIPTOR
+            setup.wValue = static_cast<std::uint16_t>((0x02 << 8) | index);  // CONFIGURATION
+            setup.wLength = static_cast<std::uint16_t>(length);
+            if (controlTransfer(client, device, setup, bytes.data(), status) != ESP_OK) {
+                ESP_LOGE(kTag, "DESC config %d: %s", index, probe::transferStatusName(status));
+                break;
+            }
+            if (wanted != 0) continue;
+            ESP_LOGI(kTag, "DESC config %d: %u bytes (wTotalLength %u)", index,
+                     static_cast<unsigned>(length), bytes[2] | (bytes[3] << 8));
+            for (std::size_t offset = 0; offset < length; offset += 32) {
+                char line[3 * 32 + 1];
+                int used = 0;
+                for (std::size_t i = offset; i < std::min(length, offset + 32); ++i)
+                    used += std::snprintf(line + used, sizeof(line) - static_cast<std::size_t>(used),
+                                          "%02x", bytes[i]);
+                ESP_LOGI(kTag, "DESC %d %04x %s", index, static_cast<unsigned>(offset), line);
+            }
+        }
     }
 }
 
@@ -773,6 +818,7 @@ bool openTp7(usb_host_client_handle_t client, std::uint8_t address) {
         usb_host_device_close(client, device);
         return false;
     }
+    dumpConfigurations(client, device, deviceDescriptor->bNumConfigurations);
     g_address = address;
     if (!startStream(client, device, address, playback)) {
         usb_host_device_close(client, device);

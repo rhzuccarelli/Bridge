@@ -121,8 +121,12 @@ size breaks the stream, on the host or in the TP-7.
   buffer. The earlier note above, of 3-byte Q10.14 feedback, is not
   reproducible now.
 
-Next: compare against Linux, where the TP-7 plays correctly. On the Pi,
-check which configuration Linux selects (`bConfigurationValue`; ESP-IDF
-always takes the first of the TP-7's three), and capture the USB traffic of a
-short playback with usbmon for the exact request sequence, packet sizes and
-feedback values.
+The probe also dumps all three configuration descriptors at attach (`DESC`
+lines). They are identical apart from bMaxPower (500, 100 and 2 mA) and the
+name string, so ESP-IDF's choice of the first configuration is not the cause.
+Each one has a master mute control on feature unit 3; the probe never touches
+it.
+
+Next: ground truth. Either record what the TP-7 receives and look at the
+samples, or compare against Linux on the Pi with a usbmon capture of a short
+playback (request sequence, packet sizes, feedback values).
