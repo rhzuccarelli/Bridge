@@ -80,22 +80,29 @@ replug the TP-7 to run again.
   buzzes at 1 kHz by itself, so only its continuous 2 kHz reference counts,
   and that one was not clean either.
 
-## Listening test: packet alignment
+## Listening test: packet sizes
 
 ESP-IDF places each packet of a transfer straight after the previous one in
-the data buffer (`_buffer_fill_isoc`). A TP-7 frame is 18 bytes, so a packet
-with an odd frame count (95 or 97, whenever the feedback is not exactly
-96.000) leaves every later packet in that transfer off 4-byte alignment. The
-suspicion is that the DWC controller's DMA does not handle that. The probe now
-cycles, 8 s each, through three continuous tones:
+the data buffer (`_buffer_fill_isoc`). A TP-7 frame is 18 bytes, so an odd
+frame count leaves the next packet off 4-byte alignment. The second pass
+compared exact sizes from the feedback (440 Hz), the feedback in even steps
+(660 Hz, always aligned) and a fixed 96 frames (880 Hz). **Only the fixed
+96-frame tone was nearly clean**, so alignment is not the main cause; packets
+that change size from one millisecond to the next are. The slight artifacts
+at a fixed 96 are expected: without rate matching, the TP-7's buffer drifts.
 
-| Tone | Packet sizes | Aligned? |
+The third pass separates "any change in size is the problem" from
+"following the feedback is". Each tone plays 8 s:
+
+| Tone | Packet sizes | Follows feedback? |
 | --- | --- | --- |
-| 440 Hz | exactly what the feedback asks for | no, when a count is odd |
-| 660 Hz | the feedback rate in steps of 2 frames | always |
-| 880 Hz | 96 frames, feedback ignored | always |
+| 440 Hz | exactly what the feedback asks for | yes |
+| 550 Hz | 95, 97, 95, 97… (average 96) | no |
+| 660 Hz | 94, 98, 94, 98… (average 96, aligned) | no |
+| 880 Hz | 96 every packet | no |
 
-The once-a-second log line ends with `odd-sized packets`, a running count. If
-440 Hz is rough while 660 Hz and 880 Hz are clean, alignment is the cause, and
-the backend sizes packets in steps of 2 frames. If all three are rough, the
-cause is elsewhere, most likely the second transaction of each microframe.
+The second log line now also shows the range of feedback values seen each
+second. If 550 Hz and 660 Hz are as clean as 880 Hz, varying sizes are fine
+and the problem is how the probe follows the feedback (the log range shows
+how much it jitters). If they are as rough as 440 Hz, any change in packet
+size breaks the stream, on the host or in the TP-7.

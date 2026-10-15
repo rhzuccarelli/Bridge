@@ -245,13 +245,16 @@ void setSampleRate(usb_host_client_handle_t client, usb_device_handle_t device,
 // ------------------------------------------------------- host channel registers
 
 /// How packets are sized. The probe cycles through these, each with its own
-/// tone, so one listening pass compares them. ESP-IDF lays a transfer's
-/// packets back to back in its buffer, and a TP-7 frame is 18 bytes: an odd
-/// frame count leaves every later packet off 4-byte alignment for the DMA.
+/// tone, so one listening pass compares them. Second pass on the bench: only
+/// fixed 96-frame packets came out nearly clean; following the feedback was
+/// rough whether or not packets stayed 4-byte aligned. These separate "any
+/// change in packet size is the problem" from "following the feedback is":
+/// the two alternating patterns average exactly 96 frames and ignore it.
 enum class Sizing {
-    Feedback,      ///< Exactly what the feedback asks for, odd counts included.
-    FeedbackEven,  ///< Follows the feedback in steps of 2 frames: always aligned.
-    Fixed,         ///< 96 frames every packet: aligned, ignores the feedback.
+    Feedback,    ///< Exactly what the feedback asks for.
+    Alternate1,  ///< 95, 97, 95, 97...: varies by 1, ignores the feedback.
+    Alternate2,  ///< 94, 98, 94, 98...: varies by 2, always aligned.
+    Fixed,       ///< 96 frames every packet, ignores the feedback.
 };
 struct Variant {
     const char* name;
@@ -259,9 +262,10 @@ struct Variant {
     Sizing sizing;
 };
 constexpr Variant kVariants[] = {
-    {"packets follow feedback exactly (odd sizes allowed)", 440, Sizing::Feedback},
-    {"packets follow feedback in even sizes (always aligned)", 660, Sizing::FeedbackEven},
-    {"packets fixed at 96 frames (aligned, no rate matching)", 880, Sizing::Fixed},
+    {"packets follow feedback exactly", 440, Sizing::Feedback},
+    {"packets alternate 95/97 frames (no feedback)", 550, Sizing::Alternate1},
+    {"packets alternate 94/98 frames (no feedback)", 660, Sizing::Alternate2},
+    {"packets fixed at 96 frames (no feedback)", 880, Sizing::Fixed},
 };
 constexpr int kVariantSeconds = 8;
 int g_variant = 0;
@@ -322,6 +326,9 @@ struct Stats {
     std::atomic<std::uint32_t> feedbackPackets{0};
     std::atomic<std::uint32_t> feedbackErrors{0};
     std::atomic<std::uint32_t> oddPackets{0};  ///< Odd frame count: next packet misaligned.
+    /// Feedback values seen since the last report: how much the TP-7 jitters.
+    std::atomic<std::uint32_t> feedbackMin{UINT32_MAX};
+    std::atomic<std::uint32_t> feedbackMax{0};
     std::atomic<std::uint32_t> lastFeedbackStatus{USB_TRANSFER_STATUS_COMPLETED};
     std::atomic<std::uint32_t> lastFeedbackBytes{0};
     /// Microframes between playback completions since the last report.
@@ -357,6 +364,7 @@ struct Stream {
     std::atomic<std::uint32_t> rateQ16{(kSampleRate / 1000) << 16};
     std::atomic<const char*> feedbackFormat{"none yet"};
     std::uint32_t remainderQ16{0};
+    std::uint32_t packetIndex{0};
     std::int32_t lastCompletion{-1};  ///< HFNUM microframe of the last completion.
     double phase{0.0};
     double phaseStep{0.0};
@@ -400,16 +408,19 @@ int fillPlayback(Stream& stream, usb_transfer_t* transfer) {
         const std::uint32_t due =
             stream.remainderQ16 + stream.rateQ16.load(std::memory_order_relaxed);
         int frames = static_cast<int>(due >> 16);
+        const int nominal = static_cast<int>(kSampleRate / 1000);
+        const int sign = (stream.packetIndex++ & 1) != 0 ? 1 : -1;
         switch (kVariants[g_variant].sizing) {
             case Sizing::Feedback: break;
-            case Sizing::FeedbackEven: frames &= ~1; break;
-            case Sizing::Fixed: frames = static_cast<int>(kSampleRate / 1000); break;
+            case Sizing::Alternate1: frames = nominal + sign; break;
+            case Sizing::Alternate2: frames = nominal + 2 * sign; break;
+            case Sizing::Fixed: frames = nominal; break;
         }
         frames = std::clamp(frames, 1, maxFrames);
         // What was not sent this packet is owed to the next one.
-        stream.remainderQ16 = kVariants[g_variant].sizing == Sizing::Fixed
-                                  ? 0
-                                  : due - (static_cast<std::uint32_t>(frames) << 16);
+        stream.remainderQ16 = kVariants[g_variant].sizing == Sizing::Feedback
+                                  ? due - (static_cast<std::uint32_t>(frames) << 16)
+                                  : 0;
         if ((frames & 1) != 0) stream.stats.oddPackets.fetch_add(1, std::memory_order_relaxed);
         for (int frame = 0; frame < frames; ++frame) {
             const float value = stream.amplitude * static_cast<float>(std::sin(stream.phase));
@@ -490,6 +501,10 @@ void feedbackDone(usb_transfer_t* transfer) {
         std::uint32_t raw = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16);
         if (desc.actual_num_bytes >= 4) raw |= static_cast<std::uint32_t>(bytes[3]) << 24;
         stream.stats.feedbackRaw.store(raw, std::memory_order_relaxed);
+        if (raw < stream.stats.feedbackMin.load(std::memory_order_relaxed))
+            stream.stats.feedbackMin.store(raw, std::memory_order_relaxed);
+        if (raw > stream.stats.feedbackMax.load(std::memory_order_relaxed))
+            stream.stats.feedbackMax.store(raw, std::memory_order_relaxed);
         stream.stats.feedbackPackets.fetch_add(1, std::memory_order_relaxed);
         applyFeedback(stream, raw);
     }
@@ -509,6 +524,7 @@ bool startStream(usb_host_client_handle_t client, usb_device_handle_t device,
     stream.rateQ16.store((kSampleRate / 1000) << 16);
     stream.feedbackFormat.store("none yet");
     stream.remainderQ16 = 0;
+    stream.packetIndex = 0;
     stream.lastCompletion = -1;
     stream.phase = 0.0;
     stream.phaseStep = 2.0 * M_PI * kVariants[g_variant].toneHz / kSampleRate;
@@ -661,9 +677,10 @@ void report(std::uint64_t& lastFrames, std::uint32_t& lastPackets, std::int64_t&
              stats.lastFeedbackBytes.load(std::memory_order_relaxed),
              stats.oddPackets.load(std::memory_order_relaxed));
     ESP_LOGI(kTag, "  completion gap %" PRIu32 "-%" PRIu32 " uframes, %" PRIu32 "-%" PRIu32
-                   " frames per packet",
+                   " frames per packet, feedback 0x%06" PRIx32 "-0x%06" PRIx32,
              stats.minGap.exchange(UINT32_MAX), stats.maxGap.exchange(0),
-             stats.minFrames.exchange(UINT32_MAX), stats.maxFrames.exchange(0));
+             stats.minFrames.exchange(UINT32_MAX), stats.maxFrames.exchange(0),
+             stats.feedbackMin.exchange(UINT32_MAX), stats.feedbackMax.exchange(0));
     lastFrames = frames;
     lastPackets = packets;
     lastTime = now;
