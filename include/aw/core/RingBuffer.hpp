@@ -47,6 +47,23 @@ public:
         return true;
     }
 
+    /// Producer side, in place: the free slot to fill, or null when full.
+    /// Nothing is visible to the consumer until `commit()`. For large `T`,
+    /// where `push(T)` would need a full copy on the producer's stack.
+    [[nodiscard]] T* reserve() noexcept {
+        const std::size_t head = head_.load(std::memory_order_relaxed);
+        if (((head + 1) & kMask) == tail_.load(std::memory_order_acquire)) {
+            return nullptr;  // full
+        }
+        return &slots_[head];
+    }
+
+    /// Publishes the slot returned by the last successful `reserve()`.
+    void commit() noexcept {
+        const std::size_t head = head_.load(std::memory_order_relaxed);
+        head_.store((head + 1) & kMask, std::memory_order_release);
+    }
+
     /// Consumer side.  Returns nullopt when empty.
     [[nodiscard]] std::optional<T> pop() noexcept {
         const std::size_t tail = tail_.load(std::memory_order_relaxed);
@@ -56,6 +73,28 @@ public:
         T item = slots_[tail];
         tail_.store((tail + 1) & kMask, std::memory_order_release);
         return item;
+    }
+
+    /// Consumer side, in place: copies the front item into `destination`
+    /// without a temporary. Returns false when empty.
+    bool popInto(T& destination) noexcept {
+        const std::size_t tail = tail_.load(std::memory_order_relaxed);
+        if (tail == head_.load(std::memory_order_acquire)) {
+            return false;  // empty
+        }
+        destination = slots_[tail];
+        tail_.store((tail + 1) & kMask, std::memory_order_release);
+        return true;
+    }
+
+    /// Consumer side: drops the front item without copying it.
+    bool discard() noexcept {
+        const std::size_t tail = tail_.load(std::memory_order_relaxed);
+        if (tail == head_.load(std::memory_order_acquire)) {
+            return false;  // empty
+        }
+        tail_.store((tail + 1) & kMask, std::memory_order_release);
+        return true;
     }
 
     [[nodiscard]] bool empty() const noexcept {

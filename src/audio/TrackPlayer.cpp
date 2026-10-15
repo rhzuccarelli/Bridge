@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <optional>
 
 namespace aw::audio {
 namespace {
@@ -33,8 +32,13 @@ struct SharedStreamSource {
     core::FrameIndex producerTimeline{0};
     std::uint64_t producerGeneration{0};
     core::RingBuffer<StreamBlock, kStreamBlockCount> blocks;
-    std::optional<StreamBlock> previousBlock;
-    std::optional<StreamBlock> currentBlock;
+    // The two most recent blocks, so a render that straddles a block boundary
+    // still finds its frames. A block is 24 KiB: these rotate an index and the
+    // ring is drained with popInto(), because copying blocks through the stack
+    // overflows the 16 KiB thread stacks of the ESP32-P4.
+    std::array<StreamBlock, 2> held{};
+    std::array<bool, 2> heldValid{};
+    std::size_t currentHeld{0};  ///< Index of the newer block; the other is older.
     std::atomic<core::FrameIndex> requestedTimeline{0};
     std::atomic<std::uint64_t> requestedGeneration{0};
     core::FrameRange loopRange{};
@@ -142,8 +146,7 @@ core::Status TrackPlayer::prefetch(core::FrameIndex timelinePosition, core::Fram
     source.requestedTimeline.store(timelinePosition, std::memory_order_relaxed);
     source.requestedGeneration.store(0, std::memory_order_relaxed);
     source.producerGeneration = 0;
-    source.currentBlock.reset();
-    source.previousBlock.reset();
+    source.heldValid = {false, false};
     if (auto status = source.reader.seek(source.sourceStartFrame); !status) return status;
     (void)stream();
     return core::success();
@@ -173,14 +176,17 @@ bool TrackPlayer::stream() {
         if (source.producerTimeline >= timelineEnd) {
             if (source.loopEnabled && source.loopRange.length > 0 &&
                 source.producerTimeline < source.loopRange.end()) {
-                StreamBlock silence;
-                silence.timelineStart = source.producerTimeline;
-                silence.frames = std::min(kStreamBlockFrames,
-                                          source.loopRange.end() - source.producerTimeline);
-                silence.generation = source.producerGeneration;
-                silence.channels = source.reader.metadata().format.channels;
-                if (!source.blocks.push(silence)) break;
-                source.producerTimeline += silence.frames;
+                StreamBlock* silence = source.blocks.reserve();
+                if (silence == nullptr) break;
+                silence->timelineStart = source.producerTimeline;
+                silence->frames = std::min(kStreamBlockFrames,
+                                           source.loopRange.end() - source.producerTimeline);
+                silence->generation = source.producerGeneration;
+                silence->channels = source.reader.metadata().format.channels;
+                silence->samples.fill(0.0F);
+                const core::FrameCount silenceFrames = silence->frames;
+                source.blocks.commit();
+                source.producerTimeline += silenceFrames;
                 produced = true;
                 continue;
             }
@@ -204,24 +210,25 @@ bool TrackPlayer::stream() {
             source.producerTimeline = timelineEnd;
             continue;
         }
+        StreamBlock* block = source.blocks.reserve();
+        if (block == nullptr) break;
         source.streamScratch.setFrameCount(wanted);
         auto read = source.reader.read(source.streamScratch);
         if (!read || read.value() == 0) {
             if (!read) source.underrun.store(true, std::memory_order_release);
             break;
         }
-        StreamBlock block;
-        block.timelineStart = source.producerTimeline;
-        block.frames = read.value();
-        block.generation = source.producerGeneration;
-        block.channels = source.streamScratch.channelCount();
-        for (core::ChannelCount channel = 0; channel < block.channels; ++channel) {
+        block->timelineStart = source.producerTimeline;
+        block->frames = read.value();
+        block->generation = source.producerGeneration;
+        block->channels = source.streamScratch.channelCount();
+        for (core::ChannelCount channel = 0; channel < block->channels; ++channel) {
             const auto samples = source.streamScratch.channel(channel);
             std::copy(samples.begin(), samples.end(),
-                      block.samples.begin() + static_cast<std::ptrdiff_t>(channel) *
-                                                  kStreamBlockFrames);
+                      block->samples.begin() + static_cast<std::ptrdiff_t>(channel) *
+                                                   kStreamBlockFrames);
         }
-        if (!source.blocks.push(block)) break;
+        source.blocks.commit();
         source.producerTimeline += read.value();
         produced = true;
     }
@@ -240,12 +247,11 @@ void TrackPlayer::requestStreamPosition(core::FrameIndex timelinePosition) noexc
     SharedStreamSource& source = *impl_->source;
     source.requestedTimeline.store(timelinePosition, std::memory_order_relaxed);
     source.requestedGeneration.fetch_add(1, std::memory_order_release);
-    source.currentBlock.reset();
-    source.previousBlock.reset();
+    source.heldValid = {false, false};
     // This is the ring's consumer side. Remove prefetched blocks from the old
     // generation immediately so the producer has capacity to refill the new
     // position before Play resumes.
-    while (source.blocks.pop()) {}
+    while (source.blocks.discard()) {}
 }
 
 void TrackPlayer::render(AudioBuffer& destination,
@@ -268,25 +274,26 @@ void TrackPlayer::render(AudioBuffer& destination,
     auto outputRight = destination.channel(destination.channelCount() > 1 ? 1 : 0);
 
     float peak = 0.0F;
-    const auto contains = [generation](const std::optional<StreamBlock>& block,
-                                       core::FrameIndex position) {
-        return block && block->generation == generation && position >= block->timelineStart &&
-               position < block->timelineStart + block->frames;
+    const auto contains = [&source, generation](std::size_t index, core::FrameIndex position) {
+        const StreamBlock& block = source.held[index];
+        return source.heldValid[index] && block.generation == generation &&
+               position >= block.timelineStart && position < block.timelineStart + block.frames;
     };
     for (core::FrameCount frame = 0; frame < frames; ++frame) {
         const core::FrameIndex desired = timelinePosition + frame;
-        while (!contains(source.previousBlock, desired) &&
-               !contains(source.currentBlock, desired)) {
-            auto next = source.blocks.pop();
-            if (!next) break;
-            source.previousBlock = std::move(source.currentBlock);
-            source.currentBlock = std::move(next);
-            if (source.currentBlock->timelineStart > desired) break;
+        std::size_t current = source.currentHeld;
+        while (!contains(1 - current, desired) && !contains(current, desired)) {
+            // The newest block goes into the older slot, which then becomes current.
+            const std::size_t older = 1 - current;
+            if (!source.blocks.popInto(source.held[older])) break;
+            source.heldValid[older] = true;
+            source.currentHeld = current = older;
+            if (source.held[current].timelineStart > desired) break;
         }
-        const StreamBlock* block = contains(source.currentBlock, desired)
-                                       ? &*source.currentBlock
-                                       : (contains(source.previousBlock, desired)
-                                              ? &*source.previousBlock
+        const StreamBlock* block = contains(current, desired)
+                                       ? &source.held[current]
+                                       : (contains(1 - current, desired)
+                                              ? &source.held[1 - current]
                                               : nullptr);
         if (block == nullptr) {
             if (desired >= source.timelineStartFrame &&

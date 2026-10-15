@@ -58,6 +58,30 @@ AW_TEST(RingBuffer, RefusesToOverflow) {
     AW_CHECK(!buffer.push(4));  // Full: drops rather than blocks or grows.
 }
 
+AW_TEST(RingBuffer, InPlaceOperationsMatchPushAndPop) {
+    // reserve/commit, popInto and discard exist so large items (24 KiB audio
+    // blocks) never travel through a stack; they must keep the same order and
+    // capacity rules as push and pop.
+    core::RingBuffer<int, 4> buffer;
+    for (int i = 1; i <= 3; ++i) {
+        int* slot = buffer.reserve();
+        AW_REQUIRE(slot != nullptr);
+        *slot = i;
+        buffer.commit();
+    }
+    AW_CHECK(buffer.reserve() == nullptr);  // Full, like push.
+
+    int value = 0;
+    AW_CHECK(buffer.popInto(value));
+    AW_CHECK_EQ(value, 1);
+    AW_CHECK(buffer.discard());
+    AW_CHECK(buffer.popInto(value));
+    AW_CHECK_EQ(value, 3);
+    AW_CHECK(!buffer.popInto(value));
+    AW_CHECK(!buffer.discard());
+    AW_CHECK(buffer.empty());
+}
+
 AW_TEST(RingBuffer, SurvivesConcurrentProducerAndConsumer) {
     // The property that matters for the audio thread: no lost or duplicated
     // items when one thread pushes while another pops.
