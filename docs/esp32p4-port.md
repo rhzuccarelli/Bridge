@@ -101,8 +101,38 @@ cannot be in audio mode and MTP mode at once. Two options:
 2. **TP-7 over USB, as on the Pi.** Possible, but it is the single largest and
    riskiest work item in the port. Defer it until everything else works.
 
-The probe settled the class question: UAC1, high-bandwidth. The recommendation
-stays local I2S, and USB monitoring stays deferred.
+The probe settled the class question: UAC1, high-bandwidth.
+
+**Decision (2026-10-14): monitor audio plays through the TP-7, as on the Pi.**
+Bridge is used with the TP-7 as its audio interface, so local I2S is dropped
+from the plan, and P3 becomes the USB playback path. P3a, below, is the probe
+that de-risks it.
+
+## P3a progress: TP-7 playback probe
+
+`firmware/esp32p4/tp7-audio-probe` streams a 1 kHz tone to the TP-7's
+playback endpoint, on channels 1–2 only. ESP-IDF v5.5.1 needed four things
+from the caller, none of which needs a patched ESP-IDF:
+
+- **`SET_INTERFACE`.** `usb_host_interface_claim` never sends it. Without it
+  the TP-7 stays on alternate 0, drops the audio and never answers the
+  feedback endpoint, while OUT packets still report "completed".
+- **FIFO split.** The high-speed controller's FIFO is 896 lines. The default
+  split gives periodic OUT 512 bytes and rejects the 882-byte endpoint. A
+  custom split (`usb_host_config_t::fifo_settings_custom`: RX 320,
+  non-periodic TX 128, periodic TX 448 lines) fits a whole 1764-byte
+  microframe. The real backend needs the same split, so MTP's bulk IN shares
+  an RX FIFO of 1280 bytes.
+- **Multi-count and PID.** The driver never writes `HCCHAR.EC`, and starts
+  every channel at `DATA0`. The probe writes `EC` = 2 and PID `MDATA` into the
+  claimed playback channel before the first transfer (`EC` = 1, `DATA0` for
+  feedback), as Linux's dwc2 does. This holds because the HAL never touches
+  those fields after allocating the channel.
+- **Feedback format.** The TP-7 reports 3-byte Q10.14 frames per
+  millisecond, about `0x180000` (96.000). The probe sizes each packet from it.
+
+On the bench, playback runs at 1000 packets/s and 96 000 frames/s with no
+failed packets, and feedback arrives with no errors.
 
 ## P1 result
 
@@ -202,6 +232,6 @@ Each step ends with something to run on the bench, the same way the Pi phases di
 | **P0 — USB probe** (done, passed on the bench) | `firmware/esp32p4/tp7-probe` | TP-7 enumerates at high speed, switches to MTP, session opens, read throughput measured |
 | **P1 — Firmware skeleton** (done, boots on the bench) | ESP-IDF project in `firmware/esp32p4/bridge` building all portable layers as a component; `AW_PLATFORM=esp32p4`; null backends; `app_main` composition root | Boots; UI renders to the serial log |
 | P2 — Storage, display, input | `FatFsStorage`, SSD1306 over `esp_lcd`, encoder/buttons over GPIO | Create/open/save projects; navigate the UI on the OLED |
-| P3 — Audio out | `I2sAudioOutput` (48 kHz, 24-bit, 256-frame periods) | Six-lane playback with no xruns over a long session |
+| P3a — TP-7 playback probe (bus and feedback clean; listening test open) | `firmware/esp32p4/tp7-audio-probe`: UAC1 high-bandwidth isochronous OUT with a custom FIFO split and multi-count | Clean 1 kHz tone from the TP-7; feedback endpoint reports a rate |
+| P3 — Audio out through the TP-7 | `Tp7UsbAudioOutput`: engine's 48 kHz stereo converted with the Pi's `convertStereo48ToTp7Monitor96`, rate-matched to the feedback endpoint, sharing the USB host with MTP | Six-lane playback with no xruns over a long session |
 | P4 — MTP | `EspUsbHost`, `EspMtpDevice`, `Tp7UsbMidiModeSwitcher`, built from the probe | Phase 8 acceptance (`docs/phase8-tp7-test.md`) on the P4 |
-| Later | UAC1 high-bandwidth monitoring through the TP-7, if still wanted | — |
