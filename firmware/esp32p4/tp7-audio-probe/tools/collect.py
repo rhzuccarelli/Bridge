@@ -9,6 +9,7 @@ log = open(f"{outdir}/lab.log", "w")
 end = time.time() + seconds
 take = None
 buf = b''
+done = []
 while time.time() < end:
     buf += s.read(65536)
     while b'\n' in buf:
@@ -29,10 +30,13 @@ while time.time() < end:
             path = f"{outdir}/run{take['run']}_variant{int(take['variant'])+1}.wav"
             open(path, 'wb').write(data)
             print(f"  {status}, {len(data)} bytes, crc {'ok' if ok else 'MISMATCH'} -> {path}", flush=True)
-            try:
-                analyse(path)
-            except Exception as e:
-                print(f"  analysis failed: {e}", flush=True)
+            done.append(path)  # Analysed after collecting: analysis here lets the port overflow.
             take = None
         elif 'LAB' in line or ' E (' in line or 'detached' in line:
             print('  ' + line[-150:], flush=True)
+
+for path in done:
+    try:
+        analyse(path)
+    except Exception as e:
+        print(f"  analysis of {path} failed: {e}", flush=True)

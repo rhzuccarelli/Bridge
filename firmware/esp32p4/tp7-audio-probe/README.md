@@ -158,3 +158,28 @@ transfers in flight and the PID set once lets the tone through in 2.4 % of
 milliseconds (with glitches to −6 dBFS); with the PID reset to MDATA before
 every single transfer, nothing arrives; one transaction per millisecond
 recorded digital silence.
+
+### Lab results (2026-10-16)
+
+- **The USB transfer is lossless.** A coded signal (each 1 ms packet
+  numbered, opposite signs in its two transactions) and a ramp numbering every
+  96 kHz frame both record exactly: every frame, in order, both transactions.
+  The PID and multi-count programming work.
+- **96.000 frames/ms is the right rate.** A fixed-rate sweep (95.90 to
+  96.00) gains or loses no frames only at 96.000; the feedback endpoint, when
+  it answers, reports `0x180000`.
+- **The TP-7 mutes continuously varying audio from the P4.** Sines and ramps
+  are silenced in 8-11 ms stretches (6-8 of its 64-sample blocks, starting on
+  block boundaries) about 23 times a second, with no data lost across a mute.
+  Squares and stepped signals are never muted. The share that survives varies
+  by session (3 % to 75 %), whatever the level.
+- **A Mac's identical sine records perfectly** (`sine-660Hz` played over USB,
+  recorded by hand): so it is something in the P4's delivery that the TP-7
+  reacts to, not the content alone.
+
+Next: capture a known-good host (Linux on the Pi, usbmon) and compare its
+setup requests, microframe timing and use of the capture interface.
+
+`tools/ramp.py` counts mutes and gained or lost frames in a ramp recording.
+`tools/wait_safe.py` waits for a cycle to start, so flashing cannot cut an
+MTP transfer and leave the TP-7 stuck in MTP mode.

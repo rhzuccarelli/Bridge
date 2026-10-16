@@ -454,13 +454,9 @@ struct LabSequence {
     int count;
 };
 constexpr LabSequence kLabSequences[] = {
-    {"A: CC 14 on, Start, Stop, CC 14 off",
+    {"CC 14 on, Start, Stop, CC 14 off",
      {{6000, {0x0B, 0xB0, 14, 127}}, {9000, {0x0F, 0xFA, 0, 0}}, {14000, {0x0F, 0xFC, 0, 0}},
       {15000, {0x0B, 0xB0, 14, 0}}},
-     4},
-    {"B: CC 22 held, Start, Stop, CC 22 released",
-     {{6000, {0x0B, 0xB0, 22, 127}}, {9000, {0x0F, 0xFA, 0, 0}}, {14000, {0x0F, 0xFC, 0, 0}},
-      {15000, {0x0B, 0xB0, 22, 0}}},
      4},
 };
 constexpr int kLabMtpMs = 20000;  ///< Switch to MTP (leaves the TP-7 time to save).
@@ -734,7 +730,9 @@ enum class Sizing {
     Alternate1,  ///< 95, 97, 95, 97...: varies by 1, ignores the feedback.
     Alternate2,  ///< 94, 98, 94, 98...: varies by 2, always aligned.
     Fixed,       ///< 96 frames every packet, ignores the feedback.
+    TP7Rate,     ///< A fixed rate from the variant (rateMilli), ignoring the feedback.
 };
+
 /// One way of streaming. The probe cycles through these, each with its own
 /// tone. A recording made on the TP-7 showed it accepts almost none of the
 /// data: short bursts of tone between long digital silence. The suspect is
@@ -754,19 +752,33 @@ struct Variant {
     std::uint32_t pid;
     int transactions;   ///< HCCHAR.EC: transactions per microframe.
     int frames;         ///< Frames per packet (Sizing::Fixed).
+    /// Instead of a sine, each 1 ms packet carries a level that numbers it
+    /// (packet index mod 16), positive in the first transaction's 49 frames
+    /// and negative in the rest, so a recording shows which packets and
+    /// which halves arrived.
+    bool coded{false};
+    int dbfs{-18};      ///< Sine level, or the coded signal's peak.
+    bool square{false}; ///< A square wave at the tone frequency instead of a sine.
+    /// A ramp numbering every 96 kHz frame: value = (n mod 8192) / 8192 - 0.5,
+    /// times 0.5. Each frame is unique within 85 ms, so a recording shows
+    /// missing, repeated or reordered frames anywhere.
+    bool ramp{false};
+    int rateMilli{96000};  ///< Sizing::TP7Rate: frames per ms, times 1000.
 };
 /// Fifth pass. A sweep of all four starting PIDs played nothing, while the
 /// TP-7 plays USB audio from a Mac. This splits "the TP-7 accepts nothing
 /// from the P4" from "the two-transaction microframe is what fails": the
 /// first variant sends one plain 882-byte transaction per millisecond (49
 /// frames, half of what the TP-7 consumes, so it will be choppy).
+/// A frame-numbering ramp showed every frame arrives intact and in order, but
+/// the TP-7 mutes 8-11 ms stretches and drops 2 frames in each: overflow
+/// slips, about 57 frames/s, while following a feedback stuck at 96.000.
+/// This sweeps fixed rates to find the TP-7's real one.
 constexpr Variant kVariants[] = {
-    {"ONE transaction per ms, 49 frames, DATA0 (choppy if accepted)", 440, Sizing::Fixed, 1, 7, 0,
-     1, 49},
-    {"TWO transactions per ms, 96 frames, MDATA before each", 880, Sizing::Fixed, 1, 7, 3, 2,
-     96},
-    {"TWO transactions per ms, 96 frames, 3 transfers, PID set once", 660, Sizing::Fixed, 3, 4, 3,
-     2, 96},
+    {"RAMP at 95.900 frames/ms", 660, Sizing::TP7Rate, 3, 4, 3, 2, 96, false, -18, false, true, 95900},
+    {"RAMP at 95.940 frames/ms", 660, Sizing::TP7Rate, 3, 4, 3, 2, 96, false, -18, false, true, 95940},
+    {"RAMP at 95.970 frames/ms", 660, Sizing::TP7Rate, 3, 4, 3, 2, 96, false, -18, false, true, 95970},
+    {"RAMP at 96.000 frames/ms", 660, Sizing::TP7Rate, 3, 4, 3, 2, 96, false, -18, false, true, 96000},
 };
 constexpr int kVariantSeconds = 8;
 int g_variant = 0;
@@ -930,15 +942,38 @@ int fillPlayback(Stream& stream, usb_transfer_t* transfer) {
             case Sizing::Alternate1: frames = nominal + sign; break;
             case Sizing::Alternate2: frames = nominal + 2 * sign; break;
             case Sizing::Fixed: frames = kVariants[g_variant].frames; break;
+            case Sizing::TP7Rate: break;  // Accumulated below at the fixed rate.
+        }
+        if (kVariants[g_variant].sizing == Sizing::TP7Rate) {
+            const auto rateQ16 = static_cast<std::uint32_t>(
+                (static_cast<std::uint64_t>(kVariants[g_variant].rateMilli) << 16) / 1000);
+            const std::uint32_t owed = stream.remainderQ16 + rateQ16;
+            frames = static_cast<int>(owed >> 16);
+            stream.remainderQ16 = owed - (static_cast<std::uint32_t>(frames) << 16);
         }
         frames = std::clamp(frames, 1, maxFrames);
         // What was not sent this packet is owed to the next one.
-        stream.remainderQ16 = kVariants[g_variant].sizing == Sizing::Feedback
-                                  ? due - (static_cast<std::uint32_t>(frames) << 16)
-                                  : 0;
+        if (kVariants[g_variant].sizing == Sizing::Feedback)
+            stream.remainderQ16 = due - (static_cast<std::uint32_t>(frames) << 16);
+        else if (kVariants[g_variant].sizing != Sizing::TP7Rate)
+            stream.remainderQ16 = 0;
         if ((frames & 1) != 0) stream.stats.oddPackets.fetch_add(1, std::memory_order_relaxed);
         for (int frame = 0; frame < frames; ++frame) {
-            const float value = stream.amplitude * static_cast<float>(std::sin(stream.phase));
+            const float wave = static_cast<float>(std::sin(stream.phase));
+            float value = stream.amplitude *
+                          (kVariants[g_variant].square ? (wave >= 0.0F ? 1.0F : -1.0F) : wave);
+            if (kVariants[g_variant].ramp) {
+                const auto n = static_cast<std::uint32_t>(stream.stats.frames.load(
+                                   std::memory_order_relaxed)) + static_cast<std::uint32_t>(frame);
+                value = 0.5F * (static_cast<float>(n % 8192) / 8192.0F - 0.5F);
+            }
+            if (kVariants[g_variant].coded) {
+                // Packet k: level 0.05 + 0.05 * (k mod 16), sign by transaction.
+                const auto k = static_cast<int>((stream.packetIndex - 1) & 15);
+                const float level = stream.amplitude * (0.05F + 0.05F * static_cast<float>(k)) / 0.8F;
+                const int firstTransactionFrames = p.maxPacket / frameBytes;  // 882 / 18 = 49
+                value = frame < firstTransactionFrames ? level : -level;
+            }
             stream.phase += stream.phaseStep;
             if (stream.phase > 2.0 * M_PI) stream.phase -= 2.0 * M_PI;
             const auto sample = static_cast<std::int32_t>(std::lrint(value * 8388607.0F));
@@ -1076,7 +1111,7 @@ bool startStream(usb_host_client_handle_t client, usb_device_handle_t device,
     stream.phaseStep = 2.0 * M_PI * kVariants[g_variant].toneHz / kSampleRate;
     ESP_LOGW(kTag, "==== variant %d: %s -> %d Hz tone", g_variant + 1, kVariants[g_variant].name,
              kVariants[g_variant].toneHz);
-    stream.amplitude = static_cast<float>(std::pow(10.0, CONFIG_PROBE_TONE_DBFS / 20.0));
+    stream.amplitude = static_cast<float>(std::pow(10.0, kVariants[g_variant].dbfs / 20.0));
 
     if (const esp_err_t err =
             usb_host_interface_claim(client, device, playback.interface, playback.alternate);
@@ -1352,6 +1387,10 @@ void enableVbus() {
 /// prints every USB-MIDI event packet the TP-7 sends (bulk IN 0x81), so its
 /// own messages for rec, play and stop can be read off and replayed.
 constexpr bool kMidiListen = false;
+/// Fetch-only mode: when a TP-7 attaches in audio mode, switch it straight to
+/// MTP and fetch its newest take, without streaming or recording anything.
+/// For takes made elsewhere (for example a sine played from a Mac).
+constexpr bool kFetchOnly = false;
 
 void listenMidi(usb_host_client_handle_t client, std::uint8_t address) {
     usb_device_handle_t device = nullptr;
@@ -1431,6 +1470,19 @@ extern "C" void app_main(void) {
                         g_lab = LabState::Idle;
                     }
                     usb_host_device_close(client.handle(), device);
+                }
+                if (!mtp && kFetchOnly) {
+                    if (usb_host_device_open(client.handle(), event.address, &device) == ESP_OK) {
+                        if (usb_host_interface_claim(client.handle(), device, g_midi.interface, 0) ==
+                            ESP_OK) {
+                            g_midi.claimed = true;
+                            requestMtp(device);
+                            usb_host_interface_release(client.handle(), device, g_midi.interface);
+                            g_midi.claimed = false;
+                        }
+                        usb_host_device_close(client.handle(), device);
+                    }
+                    continue;
                 }
                 if (!mtp && openTp7(client.handle(), event.address)) {
                     attachedAt = lastTime = esp_timer_get_time();
