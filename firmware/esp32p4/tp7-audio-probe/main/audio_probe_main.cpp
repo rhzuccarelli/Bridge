@@ -22,7 +22,10 @@
 #include <cstring>
 #include <vector>
 
+#include "PtpSession.hpp"
+#include "Tp7Midi.hpp"
 #include "UsbClient.hpp"
+#include "esp_rom_crc.h"
 #include "driver/gpio.h"
 #include "esp_intr_alloc.h"
 #include "esp_log.h"
@@ -246,7 +249,7 @@ void setSampleRate(usb_host_client_handle_t client, usb_device_handle_t device,
 /// Logs every configuration descriptor the device offers, in hex, and the
 /// configuration currently active. ESP-IDF always activates the first one;
 /// the dump lets the three be compared off-line.
-void dumpConfigurations(usb_host_client_handle_t client, usb_device_handle_t device,
+[[maybe_unused]] void dumpConfigurations(usb_host_client_handle_t client, usb_device_handle_t device,
                         int count) {
     usb_transfer_status_t status = USB_TRANSFER_STATUS_COMPLETED;
     usb_setup_packet_t setup{};
@@ -287,30 +290,483 @@ void dumpConfigurations(usb_host_client_handle_t client, usb_device_handle_t dev
     }
 }
 
+/// Reads the TP-7's master mute (feature unit 3 on audio-control interface 0,
+/// from its descriptor) and clears it. The probe never touched it before; a
+/// host such as macOS may leave the device muted.
+void unmute(usb_host_client_handle_t client, usb_device_handle_t device) {
+    constexpr std::uint16_t kFeatureUnit = 3;
+    constexpr std::uint16_t kControlInterface = 0;
+    usb_transfer_status_t status = USB_TRANSFER_STATUS_COMPLETED;
+    usb_setup_packet_t setup{};
+    setup.bmRequestType = 0xA1;  // Device to host, class, interface.
+    setup.bRequest = 0x81;       // GET_CUR
+    setup.wValue = 0x0100;       // MUTE_CONTROL, master channel
+    setup.wIndex = (kFeatureUnit << 8) | kControlInterface;
+    setup.wLength = 1;
+    std::uint8_t muted = 0xFF;
+    if (controlTransfer(client, device, setup, &muted, status) == ESP_OK)
+        ESP_LOGI(kTag, "master mute was %u", muted);
+    else
+        ESP_LOGW(kTag, "GET_CUR mute: %s", probe::transferStatusName(status));
+    setup.bmRequestType = 0x21;  // Host to device, class, interface.
+    setup.bRequest = 0x01;       // SET_CUR
+    std::uint8_t off = 0;
+    if (controlTransfer(client, device, setup, &off, status) == ESP_OK)
+        ESP_LOGI(kTag, "master mute cleared");
+    else
+        ESP_LOGW(kTag, "SET_CUR mute: %s", probe::transferStatusName(status));
+}
+
+// ----------------------------------------------------------------------- MIDI
+
+/// The TP-7's USB-MIDI streaming interface (interface 3, bulk OUT 0x02 in its
+/// descriptor), claimed alongside audio so the probe can try MIDI commands.
+struct Midi {
+    bool claimed{false};
+    std::uint8_t interface{3};
+    std::uint8_t endpoint{0x02};
+};
+Midi g_midi;
+
+/// Sends one USB-MIDI event packet (4 bytes, cable 0) and waits for it.
+bool sendMidiPacket(usb_device_handle_t device, const std::uint8_t (&packet)[4]) {
+    if (!g_midi.claimed) return false;
+    SemaphoreHandle_t done = xSemaphoreCreateBinary();
+    usb_transfer_t* transfer = nullptr;
+    bool ok = false;
+    if (done != nullptr && usb_host_transfer_alloc(64, 0, &transfer) == ESP_OK) {
+        std::memcpy(transfer->data_buffer, packet, sizeof packet);
+        transfer->num_bytes = sizeof packet;
+        transfer->device_handle = device;
+        transfer->bEndpointAddress = g_midi.endpoint;
+        transfer->callback = [](usb_transfer_t* t) {
+            xSemaphoreGive(static_cast<SemaphoreHandle_t>(t->context));
+        };
+        transfer->context = done;
+        if (usb_host_transfer_submit(transfer) == ESP_OK &&
+            xSemaphoreTake(done, pdMS_TO_TICKS(1000)) == pdTRUE)
+            ok = transfer->status == USB_TRANSFER_STATUS_COMPLETED;
+        usb_host_transfer_free(transfer);
+    }
+    if (done != nullptr) vSemaphoreDelete(done);
+    ESP_LOGW(kTag, "MIDI >>> %02x %02x %02x %02x: %s", packet[0], packet[1], packet[2], packet[3],
+             ok ? "sent" : "FAILED");
+    return ok;
+}
+
+/// A Control Change on channel 1 (CIN 0xB).
+bool sendControlChange(usb_device_handle_t device, std::uint8_t controller, std::uint8_t value) {
+    const std::uint8_t packet[4] = {0x0B, 0xB0, controller, value};
+    return sendMidiPacket(device, packet);
+}
+
+// What the TP-7 sends back, read by one bulk IN transfer that resubmits
+// itself. Pressing play makes it send Start (0xFA) and a clock (0xF8); stop
+// sends Stop (0xFC). That confirms on the P4 whether it really started.
+struct MidiIn {
+    usb_transfer_t* transfer{nullptr};
+    std::atomic<bool> running{false};
+    std::atomic<bool> pending{false};
+    std::atomic<std::uint32_t> starts{0};
+    std::atomic<std::uint32_t> continues{0};
+    std::atomic<std::uint32_t> stops{0};
+    std::atomic<std::uint32_t> clocks{0};
+    std::atomic<std::uint32_t> other{0};
+    std::atomic<std::uint32_t> lastOther{0};
+};
+MidiIn g_midiIn;
+
+void midiInDone(usb_transfer_t* transfer) {
+    if (transfer->status == USB_TRANSFER_STATUS_COMPLETED) {
+        for (int i = 0; i + 4 <= transfer->actual_num_bytes; i += 4) {
+            const std::uint8_t* m = transfer->data_buffer + i;
+            switch (m[1]) {
+                case 0xF8: g_midiIn.clocks.fetch_add(1); break;
+                case 0xFA: g_midiIn.starts.fetch_add(1); break;
+                case 0xFB: g_midiIn.continues.fetch_add(1); break;
+                case 0xFC: g_midiIn.stops.fetch_add(1); break;
+                default:
+                    if ((m[0] | m[1] | m[2] | m[3]) != 0) {
+                        g_midiIn.other.fetch_add(1);
+                        g_midiIn.lastOther.store((m[0] << 24) | (m[1] << 16) | (m[2] << 8) | m[3]);
+                    }
+            }
+        }
+    }
+    if (g_midiIn.running.load() && transfer->status != USB_TRANSFER_STATUS_NO_DEVICE &&
+        transfer->status != USB_TRANSFER_STATUS_CANCELED &&
+        usb_host_transfer_submit(transfer) == ESP_OK)
+        return;
+    g_midiIn.pending.store(false);
+}
+
+void startMidiIn(usb_device_handle_t device) {
+    if (g_midiIn.transfer == nullptr && usb_host_transfer_alloc(512, 0, &g_midiIn.transfer) != ESP_OK)
+        return;
+    g_midiIn.transfer->device_handle = device;
+    g_midiIn.transfer->bEndpointAddress = 0x81;
+    g_midiIn.transfer->num_bytes = 512;
+    g_midiIn.transfer->callback = &midiInDone;
+    g_midiIn.running.store(true);
+    g_midiIn.pending.store(true);
+    if (usb_host_transfer_submit(g_midiIn.transfer) != ESP_OK) g_midiIn.pending.store(false);
+}
+
+/// Cancels the pending read; call before releasing the MIDI interface.
+void stopMidiIn(usb_device_handle_t device, bool deviceGone) {
+    g_midiIn.running.store(false);
+    if (g_midiIn.pending.load() && !deviceGone) {
+        usb_host_endpoint_halt(device, 0x81);
+        usb_host_endpoint_flush(device, 0x81);
+    }
+    for (int i = 0; i < 100 && g_midiIn.pending.load(); ++i) vTaskDelay(pdMS_TO_TICKS(5));
+    if (!deviceGone) usb_host_endpoint_clear(device, 0x81);
+}
+
+void logMidiIn(const char* when) {
+    ESP_LOGW(kTag, "MIDI <<< %s: Start %" PRIu32 ", Continue %" PRIu32 ", Stop %" PRIu32
+                   ", clock %" PRIu32 ", other %" PRIu32 " (last %08" PRIx32 ")",
+             when, g_midiIn.starts.load(), g_midiIn.continues.load(), g_midiIn.stops.load(),
+             g_midiIn.clocks.load(), g_midiIn.other.load(), g_midiIn.lastOther.load());
+}
+
+/// Lab mode: each cycle plays one variant into the TP-7 and records it there.
+/// Verified on the bench: CC 22 arms recording, CC 23 (play) starts it, CC 24
+/// stops. Then the TP-7 is switched to MTP, the newest take is sent to the
+/// Mac over the console as base64, and the session is closed, which returns
+/// the TP-7 to USB audio for the next variant.
+enum class LabState { Idle, Streaming, AwaitingMtp };
+LabState g_lab = LabState::Idle;
+/// MIDI sent during a lab cycle, in milliseconds after the TP-7 attaches.
+/// Value 0 after 127 is the button release. The sequence that records on the
+/// TP-7: rec (arms), a couple of seconds later play (recording runs), stop.
+struct LabStep {
+    int ms;
+    std::uint8_t packet[4];  ///< USB-MIDI event packet.
+};
+/// Pressing play and stop on the TP-7 makes it send MIDI Start (0xFA) and Stop
+/// (0xFC), not the CCs in the guide's controller-mode table, and it obeys a
+/// Start and Stop sent to it. CC 22 did not arm recording, so each lab run
+/// tries one way of arming; a new dated file on the TP-7 means it worked.
+struct LabSequence {
+    const char* name;
+    LabStep steps[6];
+    int count;
+};
+constexpr LabSequence kLabSequences[] = {
+    {"A: CC 14 on, Start, Stop, CC 14 off",
+     {{6000, {0x0B, 0xB0, 14, 127}}, {9000, {0x0F, 0xFA, 0, 0}}, {14000, {0x0F, 0xFC, 0, 0}},
+      {15000, {0x0B, 0xB0, 14, 0}}},
+     4},
+    {"B: CC 22 held, Start, Stop, CC 22 released",
+     {{6000, {0x0B, 0xB0, 22, 127}}, {9000, {0x0F, 0xFA, 0, 0}}, {14000, {0x0F, 0xFC, 0, 0}},
+      {15000, {0x0B, 0xB0, 22, 0}}},
+     4},
+};
+constexpr int kLabMtpMs = 20000;  ///< Switch to MTP (leaves the TP-7 time to save).
+int g_labRun = 0;
+
+/// Sends the SysEx that makes the TP-7 re-enumerate as an MTP device.
+void requestMtp(usb_device_handle_t device) {
+    probe::BulkPipe out{device, g_midi.endpoint, 512};
+    if (out.init(64) == ESP_OK && probe::sendTp7EnterMtp(out) == ESP_OK)
+        ESP_LOGW(kTag, "LAB asked the TP-7 for MTP mode");
+    else
+        ESP_LOGE(kTag, "LAB MTP SysEx failed");
+}
+
+// ------------------------------------------------------- base64 over console
+
+/// Streams bytes to the console as base64 lines ("B64 <data>"), 57 bytes per
+/// line, keeping a CRC-32 of the raw bytes so the Mac can check the copy.
+struct Base64Dump {
+    std::uint8_t pending[57];
+    std::size_t used{0};
+    std::uint32_t crc{0};
+    std::size_t total{0};
+    std::size_t limit{0};
+
+    void flushLine() {
+        static constexpr char kAlphabet[] =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        char line[4 + 76 + 2];
+        int at = 0;
+        line[at++] = 'B';
+        line[at++] = '6';
+        line[at++] = '4';
+        line[at++] = ' ';
+        for (std::size_t i = 0; i < used; i += 3) {
+            const std::uint32_t b0 = pending[i];
+            const std::uint32_t b1 = i + 1 < used ? pending[i + 1] : 0;
+            const std::uint32_t b2 = i + 2 < used ? pending[i + 2] : 0;
+            const std::uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
+            line[at++] = kAlphabet[(triple >> 18) & 63];
+            line[at++] = kAlphabet[(triple >> 12) & 63];
+            line[at++] = i + 1 < used ? kAlphabet[(triple >> 6) & 63] : '=';
+            line[at++] = i + 2 < used ? kAlphabet[triple & 63] : '=';
+        }
+        line[at++] = '\n';
+        fwrite(line, 1, static_cast<std::size_t>(at), stdout);
+        used = 0;
+    }
+
+    bool add(std::span<const std::uint8_t> bytes) {
+        for (const std::uint8_t byte : bytes) {
+            if (total >= limit) return false;
+            pending[used++] = byte;
+            ++total;
+            if (used == sizeof pending) flushLine();
+        }
+        crc = esp_rom_crc32_le(crc, bytes.data(), static_cast<std::uint32_t>(bytes.size()));
+        return true;
+    }
+};
+
+bool dumpChunk(std::span<const std::uint8_t> chunk, void* context) {
+    return static_cast<Base64Dump*>(context)->add(chunk);
+}
+
+// ------------------------------------------------------------- MTP fetching
+
+struct MtpLayout {
+    bool found{false};
+    std::uint8_t interface{0};
+    std::uint8_t alternate{0};
+    std::uint8_t in{0};
+    std::uint8_t out{0};
+    std::uint16_t inMaxPacket{0};
+    std::uint16_t outMaxPacket{0};
+};
+
+/// The Still Image (or vendor) interface with a bulk IN and a bulk OUT.
+MtpLayout findMtp(const usb_config_desc_t* config) {
+    MtpLayout layout;
+    MtpLayout current;
+    bool candidate = false;
+    int offset = 0;
+    const auto* descriptor = reinterpret_cast<const usb_standard_desc_t*>(config);
+    while ((descriptor = usb_parse_next_descriptor(descriptor, config->wTotalLength, &offset))) {
+        if (descriptor->bDescriptorType == USB_B_DESCRIPTOR_TYPE_INTERFACE) {
+            if (candidate && current.in != 0 && current.out != 0 && !layout.found) {
+                layout = current;
+                layout.found = true;
+            }
+            const auto* intf = reinterpret_cast<const usb_intf_desc_t*>(descriptor);
+            candidate = intf->bInterfaceClass == 0x06 || intf->bInterfaceClass == 0xFF;
+            current = {};
+            current.interface = intf->bInterfaceNumber;
+            current.alternate = intf->bAlternateSetting;
+        } else if (descriptor->bDescriptorType == USB_B_DESCRIPTOR_TYPE_ENDPOINT && candidate) {
+            const auto* ep = reinterpret_cast<const usb_ep_desc_t*>(descriptor);
+            if ((ep->bmAttributes & USB_BM_ATTRIBUTES_XFERTYPE_MASK) != USB_BM_ATTRIBUTES_XFER_BULK)
+                continue;
+            const auto mps = static_cast<std::uint16_t>(ep->wMaxPacketSize & 0x7FF);
+            if (ep->bEndpointAddress & USB_B_ENDPOINT_ADDRESS_EP_DIR_MASK) {
+                current.in = ep->bEndpointAddress;
+                current.inMaxPacket = mps;
+            } else {
+                current.out = ep->bEndpointAddress;
+                current.outMaxPacket = mps;
+            }
+        }
+    }
+    if (candidate && current.in != 0 && current.out != 0 && !layout.found) {
+        layout = current;
+        layout.found = true;
+    }
+    return layout;
+}
+
+struct MtpObject {
+    std::uint32_t handle{0};
+    std::string name;
+    std::uint32_t size{0};
+    bool folder{false};
+    std::string created;   ///< PTP date "YYYYMMDDThhmmss", sorts by time.
+    std::string modified;
+};
+
+bool mtpObjectInfo(probe::PtpSession& session, std::uint32_t handle, MtpObject& object) {
+    std::vector<std::uint8_t> data;
+    probe::PtpResponse response;
+    if (session.transact(probe::ptp::kGetObjectInfo, {handle}, data, response) != ESP_OK ||
+        response.code != probe::ptp::kResponseOk)
+        return false;
+    probe::DatasetReader reader{data};
+    reader.u32();                                   // StorageID
+    const std::uint16_t format = reader.u16();
+    reader.u16();                                   // ProtectionStatus
+    const std::uint32_t size = reader.u32();
+    reader.skip(2 + 4 * 6);                         // Thumb/Image fields
+    reader.u32();                                   // ParentObject
+    reader.u16();                                   // AssociationType
+    reader.u32();                                   // AssociationDesc
+    reader.u32();                                   // SequenceNumber
+    object = {handle, reader.string(), size, format == probe::ptp::kFormatAssociation, {}, {}};
+    object.created = reader.string();
+    object.modified = reader.string();
+    return reader.ok();
+}
+
+std::vector<MtpObject> mtpChildren(probe::PtpSession& session, std::uint32_t storage,
+                                   std::uint32_t parent) {
+    std::vector<MtpObject> children;
+    std::vector<std::uint8_t> data;
+    probe::PtpResponse response;
+    if (session.transact(probe::ptp::kGetObjectHandles, {storage, 0, parent}, data, response) !=
+            ESP_OK ||
+        response.code != probe::ptp::kResponseOk)
+        return children;
+    for (const std::uint32_t handle : probe::DatasetReader{data}.u32Array()) {
+        MtpObject object;
+        if (mtpObjectInfo(session, handle, object)) children.push_back(std::move(object));
+    }
+    return children;
+}
+
+/// Walks the storage (three folder levels deep), collecting every file with
+/// its path.
+void collectFiles(probe::PtpSession& session, std::uint32_t storage, std::uint32_t parent,
+                  const std::string& prefix, int depth, std::vector<MtpObject>& files) {
+    for (MtpObject entry : mtpChildren(session, storage, parent)) {
+        entry.name = prefix + entry.name;
+        if (!entry.folder) {
+            files.push_back(std::move(entry));
+        } else if (depth > 0) {
+            collectFiles(session, storage, entry.handle, entry.name + "/", depth - 1, files);
+        }
+    }
+}
+
+/// The most recently created file anywhere on the storage. Takes started over
+/// MIDI did not show up in "recordings", so nothing is assumed about where
+/// they land, or their names ("ZYLK 1H3.WAV").
+bool newestTake(probe::PtpSession& session, std::uint32_t storage, MtpObject& take) {
+    std::vector<MtpObject> files;
+    collectFiles(session, storage, probe::ptp::kRootParent, "", 3, files);
+    std::sort(files.begin(), files.end(), [](const MtpObject& a, const MtpObject& b) {
+        if (a.created != b.created) return a.created > b.created;
+        if (a.modified != b.modified) return a.modified > b.modified;
+        return a.handle > b.handle;
+    });
+    ESP_LOGI(kTag, "LAB %u files on the TP-7; newest:", static_cast<unsigned>(files.size()));
+    for (std::size_t i = 0; i < files.size() && i < 8; ++i)
+        ESP_LOGI(kTag, "LAB   %-40s %10" PRIu32 " created %s modified %s", files[i].name.c_str(),
+                 files[i].size, files[i].created.c_str(), files[i].modified.c_str());
+    if (files.empty()) return false;
+    take = files.front();
+    return true;
+}
+
+/// Sends the newest take to the console, framed for the Mac-side collector.
+void fetchNewestTake(usb_host_client_handle_t client, usb_device_handle_t device,
+                     const MtpLayout& mtp, int variant) {
+    if (usb_host_interface_claim(client, device, mtp.interface, mtp.alternate) != ESP_OK) {
+        ESP_LOGE(kTag, "LAB cannot claim MTP interface");
+        return;
+    }
+    // A previous run may have been cut off mid-transfer (a reset of the P4
+    // while the TP-7 stayed in MTP mode), which leaves the TP-7 answering
+    // nothing. The Still Image class Device Reset request clears that.
+    {
+        usb_setup_packet_t setup{};
+        setup.bmRequestType = 0x21;  // Host to device, class, interface.
+        setup.bRequest = 0x66;       // DEVICE_RESET_REQUEST
+        setup.wIndex = mtp.interface;
+        usb_transfer_status_t status = USB_TRANSFER_STATUS_COMPLETED;
+        std::uint8_t none = 0;
+        ESP_LOGI(kTag, "LAB Still Image device reset: %s",
+                 controlTransfer(client, device, setup, &none, status) == ESP_OK
+                     ? "ok"
+                     : probe::transferStatusName(status));
+    }
+    {
+        probe::BulkPipe out{device, mtp.out, mtp.outMaxPacket};
+        probe::BulkPipe in{device, mtp.in, mtp.inMaxPacket};
+        probe::PtpSession session{out, in};
+        if (out.init(512) == ESP_OK && in.init(64 * 1024) == ESP_OK && session.open() == ESP_OK) {
+            std::vector<std::uint8_t> data;
+            probe::PtpResponse response;
+            std::vector<std::uint32_t> storages;
+            if (session.transact(probe::ptp::kGetStorageIds, {}, data, response) == ESP_OK &&
+                response.code == probe::ptp::kResponseOk)
+                storages = probe::DatasetReader{data}.u32Array();
+            MtpObject take;
+            if (!storages.empty() && newestTake(session, storages.front(), take)) {
+                Base64Dump dump;
+                dump.limit = std::min<std::size_t>(take.size, 2u << 20);
+                printf("\nLABTAKE %d %d %u %s\n", g_labRun, variant,
+                       static_cast<unsigned>(dump.limit), take.name.c_str());
+                constexpr std::uint32_t kChunk = 256 * 1024;
+                bool ok = true;
+                for (std::size_t offset = 0; ok && offset < dump.limit; offset += kChunk) {
+                    const auto wanted = static_cast<std::uint32_t>(
+                        std::min<std::size_t>(kChunk, dump.limit - offset));
+                    const esp_err_t err = session.transact(
+                        probe::ptp::kGetPartialObject,
+                        {take.handle, static_cast<std::uint32_t>(offset), wanted}, &dumpChunk, &dump,
+                        response, 10000);
+                    ok = err == ESP_OK && response.code == probe::ptp::kResponseOk;
+                    if (!ok)
+                        printf("\nLAB GetPartialObject at %u: %s, response 0x%04x\n",
+                               static_cast<unsigned>(offset), esp_err_to_name(err), response.code);
+                }
+                if (dump.used > 0) dump.flushLine();
+                printf("LABEND %s %u %08" PRIx32 "\n", ok ? "ok" : "failed",
+                       static_cast<unsigned>(dump.total), dump.crc);
+                fflush(stdout);
+            } else {
+                ESP_LOGE(kTag, "LAB no take found");
+            }
+            (void)session.close();
+        } else {
+            ESP_LOGE(kTag, "LAB MTP session failed");
+        }
+    }
+    usb_host_interface_release(client, device, mtp.interface);
+}
+
 // ------------------------------------------------------- host channel registers
 
-/// How packets are sized. The probe cycles through these, each with its own
-/// tone, so one listening pass compares them. Second pass on the bench: only
-/// fixed 96-frame packets came out nearly clean; following the feedback was
-/// rough whether or not packets stayed 4-byte aligned. These separate "any
-/// change in packet size is the problem" from "following the feedback is":
-/// the two alternating patterns average exactly 96 frames and ignore it.
+/// How packets are sized.
 enum class Sizing {
     Feedback,    ///< Exactly what the feedback asks for.
     Alternate1,  ///< 95, 97, 95, 97...: varies by 1, ignores the feedback.
     Alternate2,  ///< 94, 98, 94, 98...: varies by 2, always aligned.
     Fixed,       ///< 96 frames every packet, ignores the feedback.
 };
+/// One way of streaming. The probe cycles through these, each with its own
+/// tone. A recording made on the TP-7 showed it accepts almost none of the
+/// data: short bursts of tone between long digital silence. The suspect is
+/// the data PID. ESP-IDF stops and restarts the channel for every transfer
+/// and never resets HCTSIZ.PID for isochronous pipes, so every transfer after
+/// the first starts with whatever PID the core left (DATA2 was seen). With a
+/// single transfer in flight the channel is idle between transfers, and the
+/// probe can put MDATA back before each one.
 struct Variant {
     const char* name;
     int toneHz;
     Sizing sizing;
+    int transfers;      ///< Kept in flight.
+    int packets;        ///< 1 ms packets per transfer.
+    /// HCTSIZ.PID written before every submit (only safe with 1 transfer):
+    /// 0 DATA0, 1 DATA2, 2 DATA1, 3 MDATA.
+    std::uint32_t pid;
+    int transactions;   ///< HCCHAR.EC: transactions per microframe.
+    int frames;         ///< Frames per packet (Sizing::Fixed).
 };
+/// Fifth pass. A sweep of all four starting PIDs played nothing, while the
+/// TP-7 plays USB audio from a Mac. This splits "the TP-7 accepts nothing
+/// from the P4" from "the two-transaction microframe is what fails": the
+/// first variant sends one plain 882-byte transaction per millisecond (49
+/// frames, half of what the TP-7 consumes, so it will be choppy).
 constexpr Variant kVariants[] = {
-    {"packets follow feedback exactly", 440, Sizing::Feedback},
-    {"packets alternate 95/97 frames (no feedback)", 550, Sizing::Alternate1},
-    {"packets alternate 94/98 frames (no feedback)", 660, Sizing::Alternate2},
-    {"packets fixed at 96 frames (no feedback)", 880, Sizing::Fixed},
+    {"ONE transaction per ms, 49 frames, DATA0 (choppy if accepted)", 440, Sizing::Fixed, 1, 7, 0,
+     1, 49},
+    {"TWO transactions per ms, 96 frames, MDATA before each", 880, Sizing::Fixed, 1, 7, 3, 2,
+     96},
+    {"TWO transactions per ms, 96 frames, 3 transfers, PID set once", 660, Sizing::Fixed, 3, 4, 3,
+     2, 96},
 };
 constexpr int kVariantSeconds = 8;
 int g_variant = 0;
@@ -344,7 +800,7 @@ int setTransactionsPerMicroframe(std::uint8_t deviceAddress, std::uint8_t endpoi
             continue;
         std::uint32_t pid = kPidData0;
         if (transactions > 1)
-            pid = isIn ? (transactions == 2 ? kPidData1 : kPidData2) : kPidMData;
+            pid = isIn ? (transactions == 2 ? kPidData1 : kPidData2) : kVariants[g_variant].pid;
         usb_dwc_hctsiz_reg_t hctsiz;
         hctsiz.val = channel.hctsiz_reg.val;
         ESP_LOGI(kTag, "host channel %d (ep 0x%02x): EC %u -> %d, PID %u -> %u", index, endpoint,
@@ -473,7 +929,7 @@ int fillPlayback(Stream& stream, usb_transfer_t* transfer) {
             case Sizing::Feedback: break;
             case Sizing::Alternate1: frames = nominal + sign; break;
             case Sizing::Alternate2: frames = nominal + 2 * sign; break;
-            case Sizing::Fixed: frames = nominal; break;
+            case Sizing::Fixed: frames = kVariants[g_variant].frames; break;
         }
         frames = std::clamp(frames, 1, maxFrames);
         // What was not sent this packet is owed to the next one.
@@ -506,6 +962,20 @@ int fillPlayback(Stream& stream, usb_transfer_t* transfer) {
     }
     transfer->num_bytes = total;
     return total;
+}
+
+/// Puts the playback channel's PID back to the variant's, counting what the core left
+/// there. Only while the channel is idle: with one transfer in flight, the
+/// completion callback is such a moment.
+std::atomic<std::uint32_t> g_pidLeft[4];
+void restartPid() {
+    if (g_playbackChannel < 0) return;
+    volatile usb_dwc_host_chan_regs_t& channel = USB_DWC_HS.host_chans[g_playbackChannel];
+    usb_dwc_hctsiz_reg_t hctsiz;
+    hctsiz.val = channel.hctsiz_reg.val;
+    g_pidLeft[hctsiz.pid & 3].fetch_add(1, std::memory_order_relaxed);
+    hctsiz.pid = kVariants[g_variant].pid;
+    channel.hctsiz_reg.val = hctsiz.val;
 }
 
 void playbackDone(usb_transfer_t* transfer) {
@@ -544,6 +1014,7 @@ void playbackDone(usb_transfer_t* transfer) {
     if (stream.running.load(std::memory_order_acquire) &&
         transfer->status != USB_TRANSFER_STATUS_NO_DEVICE) {
         fillPlayback(stream, transfer);
+        if (kVariants[g_variant].transfers == 1) restartPid();
         if (usb_host_transfer_submit(transfer) == ESP_OK) return;
     }
     stream.inFlight.fetch_sub(1, std::memory_order_acq_rel);
@@ -621,8 +1092,8 @@ bool startStream(usb_host_client_handle_t client, usb_device_handle_t device,
     }
 
     if (kHighBandwidth && playback.transactions > 1) {
-        g_playbackChannel =
-            setTransactionsPerMicroframe(address, playback.endpoint, playback.transactions);
+        g_playbackChannel = setTransactionsPerMicroframe(address, playback.endpoint,
+                                                         kVariants[g_variant].transactions);
         if (g_playbackChannel < 0)
             ESP_LOGE(kTag, "no idle host channel matches ep 0x%02x; multi-count not set",
                      playback.endpoint);
@@ -635,11 +1106,11 @@ bool startStream(usb_host_client_handle_t client, usb_device_handle_t device,
 
     // Playback transfers. Each packet is one service interval (1 ms).
     const int packetsPerUrb =
-        std::min(CONFIG_PROBE_PACKETS_PER_URB,
+        std::min(kVariants[g_variant].packets,
                  std::max(1, kUsableIsocDescriptors / playback.intervalMicroframes));
     const int packetBytes = playback.maxPacket * playback.transactions;
     stream.running.store(true, std::memory_order_release);
-    for (int i = 0; i < CONFIG_PROBE_URBS_IN_FLIGHT; ++i) {
+    for (int i = 0; i < kVariants[g_variant].transfers; ++i) {
         usb_transfer_t* transfer = nullptr;
         if (usb_host_transfer_alloc(static_cast<std::size_t>(packetBytes * packetsPerUrb),
                                     packetsPerUrb, &transfer) != ESP_OK) {
@@ -768,12 +1239,15 @@ void report(std::uint64_t& lastFrames, std::uint32_t& lastPackets, std::int64_t&
     }
     ESP_LOGI(kTag, "  sent %" PRIu32 "-%" PRIu32 " bytes per packet, %" PRIu32
                    " short packets | playback channel EC now %" PRIu32 " | feedback: %" PRIu32
-                   " transfers back, %" PRIu32 " empty packets (buffer 0x%08" PRIx32 ")",
+                   " transfers back, %" PRIu32 " empty packets (buffer 0x%08" PRIx32 ")"
+                   " | PID left at restart: DATA0 %" PRIu32 ", DATA2 %" PRIu32 ", DATA1 %" PRIu32
+                   ", MDATA %" PRIu32,
              stats.sentMin.exchange(UINT32_MAX), stats.sentMax.exchange(0),
              stats.shortPackets.load(std::memory_order_relaxed), ec,
              stats.feedbackTransfers.load(std::memory_order_relaxed),
              stats.feedbackEmpty.load(std::memory_order_relaxed),
-             stats.emptyPacketBytes.load(std::memory_order_relaxed));
+             stats.emptyPacketBytes.load(std::memory_order_relaxed), g_pidLeft[0].exchange(0),
+             g_pidLeft[1].exchange(0), g_pidLeft[2].exchange(0), g_pidLeft[3].exchange(0));
     lastFrames = frames;
     lastPackets = packets;
     lastTime = now;
@@ -818,7 +1292,15 @@ bool openTp7(usb_host_client_handle_t client, std::uint8_t address) {
         usb_host_device_close(client, device);
         return false;
     }
-    dumpConfigurations(client, device, deviceDescriptor->bNumConfigurations);
+    unmute(client, device);
+    if (const esp_err_t err = usb_host_interface_claim(client, device, g_midi.interface, 0);
+        err == ESP_OK) {
+        g_midi.claimed = true;
+        ESP_LOGI(kTag, "claimed MIDI interface %u", g_midi.interface);
+        startMidiIn(device);
+    } else {
+        ESP_LOGE(kTag, "claim MIDI interface: %s", esp_err_to_name(err));
+    }
     g_address = address;
     if (!startStream(client, device, address, playback)) {
         usb_host_device_close(client, device);
@@ -866,6 +1348,47 @@ void enableVbus() {
 
 }  // namespace
 
+/// MIDI listen mode: no audio, no MTP. Claims the TP-7's MIDI interface and
+/// prints every USB-MIDI event packet the TP-7 sends (bulk IN 0x81), so its
+/// own messages for rec, play and stop can be read off and replayed.
+constexpr bool kMidiListen = false;
+
+void listenMidi(usb_host_client_handle_t client, std::uint8_t address) {
+    usb_device_handle_t device = nullptr;
+    if (usb_host_device_open(client, address, &device) != ESP_OK) return;
+    const usb_device_desc_t* descriptor = nullptr;
+    usb_host_get_device_descriptor(device, &descriptor);
+    ESP_LOGW(kTag, "MIDI LISTEN: device %04x:%04x attached; press buttons on the TP-7",
+             descriptor->idVendor, descriptor->idProduct);
+    if (usb_host_interface_claim(client, device, 3, 0) != ESP_OK) {
+        ESP_LOGE(kTag, "MIDI LISTEN: cannot claim MIDI interface 3");
+        usb_host_device_close(client, device);
+        return;
+    }
+    {
+        probe::BulkPipe in{device, 0x81, 512};
+        if (in.init(512) == ESP_OK) {
+            for (;;) {
+                std::size_t received = 0;
+                const esp_err_t err = in.read(512, received, 1000);
+                if (err == ESP_ERR_TIMEOUT) continue;
+                if (err != ESP_OK) {
+                    ESP_LOGW(kTag, "MIDI LISTEN: read ended (%s)", esp_err_to_name(err));
+                    break;
+                }
+                for (std::size_t i = 0; i + 4 <= received; i += 4) {
+                    const std::uint8_t* m = in.data() + i;
+                    if ((m[0] | m[1] | m[2] | m[3]) == 0) continue;
+                    ESP_LOGW(kTag, "MIDI IN  %02x %02x %02x %02x  (status %02x, data %u %u)", m[0],
+                             m[1], m[2], m[3], m[1], m[2], m[3]);
+                }
+            }
+        }
+    }
+    usb_host_interface_release(client, device, 3);
+    usb_host_device_close(client, device);
+}
+
 extern "C" void app_main(void) {
     enableVbus();
     xTaskCreatePinnedToCore(&hostLibraryTask, "usb_host", 4096, xTaskGetCurrentTaskHandle(), 6,
@@ -876,51 +1399,80 @@ extern "C" void app_main(void) {
     ESP_ERROR_CHECK(client.start());
     ESP_LOGI(kTag, "waiting for a TP-7 in USB-audio mode");
 
-    std::int64_t startedAt = 0;
+    std::int64_t attachedAt = 0;
     std::uint64_t lastFrames = 0;
     std::uint32_t lastPackets = 0;
     std::int64_t lastTime = 0;
+    int labStep = 0;
     for (;;) {
         probe::UsbEvent event;
-        if (client.waitEvent(event, pdMS_TO_TICKS(1000))) {
+        if (client.waitEvent(event, pdMS_TO_TICKS(200))) {
+            if (kMidiListen && event.kind == probe::UsbEvent::Kind::Attached) {
+                listenMidi(client.handle(), event.address);
+                continue;
+            }
             if (event.kind == probe::UsbEvent::Kind::Attached && g_stream.device == nullptr) {
-                if (openTp7(client.handle(), event.address)) {
-                    startedAt = lastTime = esp_timer_get_time();
+                // An MTP TP-7 is the take we asked for; anything else may be audio.
+                usb_device_handle_t device = nullptr;
+                bool mtp = false;
+                if (usb_host_device_open(client.handle(), event.address, &device) == ESP_OK) {
+                    const usb_device_desc_t* descriptor = nullptr;
+                    const usb_config_desc_t* config = nullptr;
+                    usb_host_get_device_descriptor(device, &descriptor);
+                    usb_host_get_active_config_descriptor(device, &config);
+                    mtp = descriptor->idVendor == kTeenageEngineering &&
+                          descriptor->idProduct == kTp7MtpProduct;
+                    if (mtp) {
+                        ESP_LOGW(kTag, "LAB TP-7 is in MTP mode; fetching the newest take");
+                        const MtpLayout layout = findMtp(config);
+                        if (layout.found) fetchNewestTake(client.handle(), device, layout, g_variant);
+                        g_variant = (g_variant + 1) % static_cast<int>(std::size(kVariants));
+                        ++g_labRun;
+                        g_lab = LabState::Idle;
+                    }
+                    usb_host_device_close(client.handle(), device);
+                }
+                if (!mtp && openTp7(client.handle(), event.address)) {
+                    attachedAt = lastTime = esp_timer_get_time();
                     lastFrames = 0;
                     lastPackets = 0;
+                    labStep = 0;
+                    g_lab = LabState::Streaming;
+                    ESP_LOGW(kTag, "LAB run %d: variant %d, arming %s", g_labRun, g_variant + 1,
+                             kLabSequences[g_labRun % std::size(kLabSequences)].name);
                 }
             } else if (event.kind == probe::UsbEvent::Kind::Detached &&
                        event.device == g_stream.device && g_stream.device != nullptr) {
                 ESP_LOGW(kTag, "---- TP-7 detached while streaming");
+                stopMidiIn(g_stream.device, true);
+                g_midi.claimed = false;
                 stopStream(client.handle(), true);
+                g_lab = LabState::Idle;
             }
             continue;
         }
-        if (g_stream.device == nullptr) continue;
-        report(lastFrames, lastPackets, lastTime);
-        if (esp_timer_get_time() - startedAt >= std::int64_t{kVariantSeconds} * 1'000'000) {
+        if (g_stream.device == nullptr || g_lab != LabState::Streaming) continue;
+        const std::int64_t now = esp_timer_get_time();
+        if (now - lastTime >= 1'000'000) report(lastFrames, lastPackets, lastTime);
+        const std::int64_t elapsed = now - attachedAt;
+        const LabSequence& sequence = kLabSequences[g_labRun % std::size(kLabSequences)];
+        while (labStep < sequence.count && elapsed >= std::int64_t{sequence.steps[labStep].ms} * 1000) {
+            logMidiIn("before");
+            sendMidiPacket(g_stream.device, sequence.steps[labStep].packet);
+            ++labStep;
+        }
+        if (labStep == sequence.count &&
+            elapsed >= std::int64_t{kLabMtpMs} * 1000) {
             usb_device_handle_t device = g_stream.device;
-            const Playback playback = g_stream.playback;
+            logMidiIn("cycle end");
+            stopMidiIn(device, false);
             stopStream(client.handle(), false, false);
-            g_variant = (g_variant + 1) % static_cast<int>(std::size(kVariants));
-            if (!startStream(client.handle(), device, g_address, playback)) {
-                usb_host_device_close(client.handle(), device);
-                g_stream.device = nullptr;
-            }
-            startedAt = lastTime = esp_timer_get_time();
-            lastFrames = 0;
-            lastPackets = 0;
-            continue;
-        }
-        if (CONFIG_PROBE_SECONDS > 0 &&
-            esp_timer_get_time() - startedAt >= std::int64_t{CONFIG_PROBE_SECONDS} * 1'000'000) {
-            const Stats& stats = g_stream.stats;
-            ESP_LOGI(kTag, "done after %d s: %" PRIu32 " packets, %" PRIu32 " bad, %" PRIu64
-                           " frames",
-                     CONFIG_PROBE_SECONDS, stats.packets.load(), stats.badPackets.load(),
-                     stats.frames.load());
-            stopStream(client.handle(), false);
-            ESP_LOGI(kTag, "stopped; replug the TP-7 or reset to run again");
+            requestMtp(device);
+            if (g_midi.claimed) usb_host_interface_release(client.handle(), device, g_midi.interface);
+            g_midi.claimed = false;
+            usb_host_device_close(client.handle(), device);
+            g_stream.device = nullptr;
+            g_lab = LabState::AwaitingMtp;
         }
     }
 }

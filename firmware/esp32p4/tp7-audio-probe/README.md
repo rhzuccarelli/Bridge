@@ -130,3 +130,31 @@ it.
 Next: ground truth. Either record what the TP-7 receives and look at the
 samples, or compare against Linux on the Pi with a usbmon capture of a short
 playback (request sequence, packet sizes, feedback values).
+
+## Lab mode: automatic record-and-analyse loop (2026-10-16)
+
+Listening by ear stopped being useful, so the probe now measures itself. Each
+cycle, with no hands needed:
+
+1. Streams one variant to the TP-7 (the variants cycle run by run).
+2. Makes the TP-7 record it over USB-MIDI: CC 14 = 127, MIDI Start (`FA`),
+   five seconds later MIDI Stop (`FC`), then CC 14 = 0. The TP-7 echoes Start,
+   a clock and Stop on its MIDI output, which the probe counts and logs.
+   CC 22 (the "rec" button CC) does not arm recording over MIDI.
+3. Switches the TP-7 to MTP, finds the newest file by its creation date, and
+   prints it over the console as base64 with a CRC-32. The console runs at
+   2 Mbit/s (custom UART console in `sdkconfig.defaults`), so a 5-second take
+   (1.45 MB) arrives in about 10 s.
+4. Closes the session, which returns the TP-7 to USB audio for the next cycle.
+
+The TP-7's recording input must be set to USB by hand once. On the Mac,
+`tools/collect.py <port> <seconds> <outdir>` saves each take as a WAV,
+checks its CRC and runs `tools/analyse.py`, which reports the tone frequency,
+level, and the share of 1 ms blocks that hold the tone. Needs `numpy` and
+`pyserial`.
+
+First automatic results: two transactions per microframe with three
+transfers in flight and the PID set once lets the tone through in 2.4 % of
+milliseconds (with glitches to −6 dBFS); with the PID reset to MDATA before
+every single transfer, nothing arrives; one transaction per millisecond
+recorded digital silence.
