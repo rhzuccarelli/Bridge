@@ -247,6 +247,38 @@ Console writes now use `fileno(stdout)` rather than fd 1. With FatFS linked
 in, `/dev/console` no longer had descriptor 1, and every log line silently
 went nowhere.
 
+## Storage and import speed
+
+Importing a take was unusably slow: about 0.45 MiB/s, so a 200 MiB take took
+7 minutes. `firmware/esp32p4/storage-bench` timed each stage. The card did
+5.3 MiB/s from an aligned internal-RAM buffer but 0.48 MiB/s through
+`FatFsStorage`. ESP-IDF's SD driver only uses multi-sector DMA when the
+buffer's address and size are cache-aligned; otherwise it writes one 512-byte
+sector per command through a bounce buffer. Import data arrives in PSRAM,
+shifted by the 12-byte MTP container header, so almost every sector took that
+path, and reads too.
+
+`FatFsStorage` now hands out `FatFsFile`s (POSIX descriptors instead of
+stdio) that move reads and writes of 4 KiB or more through one shared
+64 KiB buffer in internal DMA RAM, 128-byte aligned. The data is placed at
+the file offset modulo 128, so the whole sectors FatFS passes straight to the
+driver start aligned. The card also runs at 40 MHz (high speed) now, falling
+back to 20 MHz if a card refuses. `EspMtpDevice` sends the Still Image class
+Device Reset before each OpenSession, so a transfer cut off by a P4 reset no
+longer leaves the TP-7 answering nothing.
+
+| Bench (SanDisk 64 GB) | Before | After |
+| --- | --- | --- |
+| SD write, 64 KiB chunks | 0.48 MiB/s | 6.3–6.6 MiB/s |
+| SD read, 64 KiB chunks | 1.5 MiB/s | 11.1 MiB/s |
+| MTP read from the TP-7 | — | 26.2 MiB/s |
+| Import path, 198 MiB take | ≈7 min | 38–43 s (4.6–5.2 MiB/s), CRC-checked |
+
+The import is now bound by the card: 85 % of its time is SD writes. Writes
+under 4 KiB still go sector by sector (0.49 MiB/s at 1 KiB); nothing large
+writes that way. Overlapping the MTP reads with the SD writes would save at
+most the remaining 15 %.
+
 ## P4 progress: TP-7 mode switch and MTP
 
 Opening Import or Export on the P4 now switches the TP-7 into MTP mode on its

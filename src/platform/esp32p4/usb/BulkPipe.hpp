@@ -58,4 +58,10 @@ private:
 
 [[nodiscard]] const char* transferStatusName(usb_transfer_status_t status);
 
+/// One control transfer on EP0, waited for (up to 1 s). `data` is sent for an
+/// OUT request and filled for an IN request; it may be null when wLength is 0.
+/// Never call this on the USB client task.
+esp_err_t controlTransfer(usb_host_client_handle_t client, usb_device_handle_t device,
+                          const usb_setup_packet_t& setup, std::uint8_t* data);
+
 }  // namespace aw::platform::esp32p4::usb

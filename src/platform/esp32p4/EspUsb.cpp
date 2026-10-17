@@ -157,6 +157,13 @@ public:
             stack_->release(*lease);
             return core::makeError(core::ErrorCode::DeviceBusy, "cannot claim MTP interface");
         }
+        // A transfer cut off earlier (the P4 reset mid-import) leaves the TP-7
+        // answering nothing until the Still Image class Device Reset request.
+        usb_setup_packet_t reset{};
+        reset.bmRequestType = 0x21;  // Host to device, class, interface.
+        reset.bRequest = 0x66;       // DEVICE_RESET_REQUEST
+        reset.wIndex = layout.mtpInterface;
+        (void)usb::controlTransfer(stack_->client(), lease->handle, reset, nullptr);
         auto open = std::make_unique<Open>(*lease);
         if (open->out.init(kPipeBytes) != ESP_OK || open->in.init(kPipeBytes) != ESP_OK) {
             open_ = std::move(open);

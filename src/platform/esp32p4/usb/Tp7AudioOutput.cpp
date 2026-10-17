@@ -42,46 +42,6 @@ constexpr std::uint32_t kPidData2 = 1;
 constexpr std::uint32_t kPidData1 = 2;
 constexpr std::uint32_t kPidMData = 3;
 
-/// One control transfer on EP0, waited for. `data` is sent for an OUT request
-/// and filled for an IN request. Never call this on the USB client task.
-esp_err_t controlTransfer(usb_host_client_handle_t client, usb_device_handle_t device,
-                          const usb_setup_packet_t& setup, std::uint8_t* data) {
-    SemaphoreHandle_t done = xSemaphoreCreateBinary();
-    if (done == nullptr) return ESP_ERR_NO_MEM;
-    usb_transfer_t* transfer = nullptr;
-    esp_err_t err = usb_host_transfer_alloc(
-        USB_SETUP_PACKET_SIZE + std::max<std::size_t>(64, setup.wLength), 0, &transfer);
-    if (err == ESP_OK) {
-        std::memcpy(transfer->data_buffer, &setup, USB_SETUP_PACKET_SIZE);
-        const bool isIn = (setup.bmRequestType & USB_BM_REQUEST_TYPE_DIR_IN) != 0;
-        if (!isIn && setup.wLength > 0)
-            std::memcpy(transfer->data_buffer + USB_SETUP_PACKET_SIZE, data, setup.wLength);
-        transfer->num_bytes = USB_SETUP_PACKET_SIZE + setup.wLength;
-        transfer->device_handle = device;
-        transfer->bEndpointAddress = 0;
-        transfer->callback = [](usb_transfer_t* t) {
-            xSemaphoreGive(static_cast<SemaphoreHandle_t>(t->context));
-        };
-        transfer->context = done;
-        err = usb_host_transfer_submit_control(client, transfer);
-        if (err == ESP_OK) {
-            if (xSemaphoreTake(done, pdMS_TO_TICKS(1000)) != pdTRUE) {
-                // The transfer still owns the semaphore; leak both rather than
-                // free them under a pending completion.
-                return ESP_ERR_TIMEOUT;
-            }
-            if (transfer->status != USB_TRANSFER_STATUS_COMPLETED) {
-                err = ESP_FAIL;
-            } else if (isIn && setup.wLength > 0) {
-                std::memcpy(data, transfer->data_buffer + USB_SETUP_PACKET_SIZE, setup.wLength);
-            }
-        }
-        usb_host_transfer_free(transfer);
-    }
-    vSemaphoreDelete(done);
-    return err;
-}
-
 /// `usb_host_interface_claim` only allocates the host's pipes; it never sends
 /// SET_INTERFACE. Without it the TP-7 stays on alternate 0, ignores the audio
 /// and never answers the feedback endpoint.

@@ -8,7 +8,7 @@
 ## src/*/CMakeLists.txt files build unchanged for the device.
 ##
 idf_component_register(REQUIRES esp_timer esp_driver_gpio esp_driver_spi usb fatfs sdmmc
-                                esp_driver_sdmmc pthread)
+                                esp_driver_sdmmc pthread esp_mm)
 
 cmake_path(SET AW_ROOT NORMALIZE "${CMAKE_CURRENT_LIST_DIR}/../../../../..")
 set(AW_PLATFORM "esp32p4" CACHE STRING "Hardware backend to build" FORCE)

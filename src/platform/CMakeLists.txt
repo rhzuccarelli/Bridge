@@ -39,7 +39,7 @@ if(AW_PLATFORM STREQUAL "esp32p4")
     target_include_directories(aw_platform PUBLIC ${AW_INCLUDE_DIR})
     target_link_libraries(aw_platform
         PUBLIC aw::core aw::hal aw::compiler_options
-        PRIVATE idf::esp_timer idf::esp_driver_gpio idf::esp_driver_spi idf::usb idf::fatfs idf::sdmmc
+        PRIVATE idf::esp_timer idf::esp_driver_gpio idf::esp_driver_spi idf::usb idf::fatfs idf::sdmmc idf::esp_mm
                 idf::esp_driver_sdmmc idf::pthread)
     # ESP-IDF register headers use GNU statement expressions, and FreeRTOS
     # macros expand to C casts in our own code. Per source file, because those

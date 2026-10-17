@@ -18,6 +18,9 @@ struct SdCardConfig {
     /// On-chip LDO channel that powers the card's I/O, -1 for none. The P4
     /// reference design (and the P4-Pico) feed the slot from LDO VO4.
     int ldoChannel{4};
+    /// Bus clock. 40 MHz is SD high speed; a card that cannot run it is
+    /// mounted again at 20 MHz.
+    int maxFrequencyKhz{40000};
     const char* mountPoint{"/sdcard"};
 };
 
@@ -35,6 +38,16 @@ struct SdCardConfig {
 /// instead of not at all. Power loss between 2 and 3 leaves a stale `to.old`,
 /// which the same recovery deletes. That is not atomic, but it never loses the
 /// last good version.
+///
+/// Files are POSIX descriptors (`FatFsFile`), not stdio. The SD driver only
+/// moves data by DMA in multi-sector commands when the buffer's address and
+/// size are cache-aligned; anything else it writes one 512-byte sector per
+/// command through a bounce buffer, about 11 times slower (0.48 against
+/// 5.3 MiB/s on the bench). Import data arrives in PSRAM, shifted by the MTP
+/// container header, so nearly every write took that path. Reads and writes
+/// of 4 KiB or more therefore go through one shared, cache-aligned buffer in
+/// internal DMA RAM, with the data placed so that the whole sectors FatFS
+/// hands to the driver start aligned.
 ///
 /// Newlib's `long` file offsets limit seeking to 2 GiB per file on this target.
 class FatFsStorage final : public hal::StorageInterface {
