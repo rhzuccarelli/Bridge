@@ -22,7 +22,7 @@ The platform assembly is `src/platform/esp32p4`, and the composition root is
 | Display | 128×64 SSD1306 over SPI2 (`EspSpiOledBus`, 8 MHz, mode 0): SCK GPIO6, SDA GPIO5, RES GPIO4, DC GPIO3, CS GPIO14, VCC on 3.3 V. `SerialPreviewDisplay` mirrors each changed frame to the serial log | done |
 | Storage | `FatFsStorage`: SD card over SDMMC (4-bit, 20 MHz; CLK GPIO43, CMD GPIO44, D0–D3 GPIO39–42, powered from on-chip LDO VO4), FatFS with long file names, projects under `/sdcard/projects`. Without a card, `NoCardStorage` stands in | done |
 | Encoder + push switch | `EspGpioEncoder` / `EspGpioButtons`: KY-040 with CLK on GPIO16, DT on GPIO15 and SW on GPIO17, sampled at 1 kHz with the Pi's decoder and debounce logic | done |
-| Audio output | `NullAudioOutput`: drives the engine on a wall clock and discards samples | P3 (I2S) |
+| Audio output | `Tp7AudioOutput` (`usb/`): the engine's 48 kHz stereo through the TP-7's USB playback endpoint (96 kHz, six channels, rate-matched to its feedback), behind `FallbackAudioOutput`, which uses `NullAudioOutput` on a wall clock while no TP-7 is in USB-audio mode | P3 (sine verified by recording) |
 | USB, MTP, TP-7 mode | `createUsbBackends` (`EspUsb.cpp`, `usb/`): ESP-IDF USB host on the high-speed port, a PTP/MTP initiator built from the probe (reads with GetPartialObject, writes with SendObjectInfo/SendObject), and the SysEx switch into MTP sent as USB-MIDI | done (Import verified) |
 
 ## Build, flash, watch

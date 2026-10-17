@@ -34,10 +34,10 @@ struct Esp32P4Config {
 /// The clock, the SSD1306 OLED over SPI (`EspSpiOledBus`, mirrored to the
 /// serial log) and the encoder with its push switch (`EspGpioEncoder`,
 /// `EspGpioButtons`) and the TP-7 over USB (`createUsbBackends`: hotplug,
-/// MTP, and the switch into MTP mode) and the SD card (`FatFsStorage`; an empty
-/// read-only stand-in when no card mounts) are real hardware. Still a stand-in:
-///  - audio output is `NullAudioOutput`, which still drives the engine on a
-///    wall clock (I2S is P3).
+/// MTP, the switch into MTP mode, and monitor audio through the TP-7's USB
+/// playback endpoint, falling back to `NullAudioOutput` on a wall clock while
+/// no TP-7 is in USB-audio mode) and the SD card (`FatFsStorage`; an empty
+/// read-only stand-in when no card mounts) are real hardware.
 [[nodiscard]] core::Result<hal::Platform> createPlatform(const Esp32P4Config& config);
 
 }  // namespace aw::platform::esp32p4

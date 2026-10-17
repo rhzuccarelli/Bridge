@@ -145,13 +145,51 @@ cable (2026-10-17), four takes in a row recorded the −18 dBFS sine in 100% of
 1 ms blocks, at −21.0 dB RMS, with no glitches, and packet sizes following the
 feedback. Keep the USB data leads short and twisted.
 
-Open issue for the backend: after the P4 boots, the feedback endpoint
-answers only with empty packets until the TP-7 has been re-enumerated once
-(after an MTP round trip it reports normally, about 96.003 frames/ms). With
-no feedback the probe sends a fixed 96 frames/ms, and after about 13 s the
-TP-7's buffer reaches its limit and slips a sample every 4 ms (audible as a
-fine crackle). `Tp7UsbAudioOutput` must get feedback going at attach, or
-estimate the rate some other way.
+## P3 progress: monitor audio through the TP-7
+
+`Tp7AudioOutput` (`src/platform/esp32p4/usb/`) is the platform's audio
+output, wrapped in `FallbackAudioOutput` as on the Pi: while the TP-7 is
+unplugged or in MTP mode the engine runs on the silent wall clock, and the
+app's 2-second `refresh()` switches to the TP-7 when it returns. The engine
+stays at 48 kHz stereo; projects never change rate. The TP-7's playback
+endpoint takes only 96 kHz, six channels, so the backend converts with the
+Pi's `convertStereo48ToTp7Monitor96` (FL/FR carry the mix).
+
+- A render task (priority 17, core 1) pulls one 256-frame period from the
+  engine whenever the `FrameFifo` of packed 96 kHz frames holds under 1024
+  frames. USB completions (3 transfers of 4 packets in flight) refill each
+  packet with as many frames as the feedback asks for (`IsoPacketSizer`). The
+  render side follows the FIFO level, so the engine runs on the TP-7's clock,
+  which measures about 96.003 frames/ms against the P4's (30 ppm, ordinary
+  crystal tolerance). Latency is about 23 ms (FIFO target plus queued
+  transfers); a dry FIFO plays silence and reports an xrun.
+- `EspUsbStack` now installs the FIFO split playback needs (RX 320,
+  non-periodic TX 128, periodic TX 448 lines) and runs its host and client
+  tasks at priorities 19 and 18, above the engine's streaming thread.
+- `Tp7MidiPort` keeps the TP-7's MIDI interface claimed while it is attached,
+  with a read always pending. The TP-7 sends MIDI clock while its transport
+  runs; once that was queued unread, it ignored the SysEx that switches it to
+  MTP. The mode switch and bench tooling (`EspUsbBackends::sendMidi`) send
+  through it.
+- Feedback watchdog. When its host disappears mid-stream (the P4 reset or lost
+  power while the TP-7 stayed on), the TP-7 answers the feedback endpoint with
+  empty packets until it re-enumerates. Bus resets and alternate-setting
+  changes do not clear it (tried three times per boot, twice). Open-loop at
+  96.000 its buffer reaches a limit after about 13 s and it slips a sample
+  every 4 ms. So after 1.5 s without a rate, `refresh()` asks for a reset: the
+  MTP SysEx, then a PTP session opened and closed, which returns the TP-7 to
+  audio (at most twice in a row). On the bench that took about 4 s from boot
+  to a locked stream.
+
+Bench test: `firmware/esp32p4/tp7-output-test` plays a 660 Hz, −18 dBFS sine
+from a 48 kHz callback through the real backend and runs the record-and-fetch
+loop. Five takes in a row (one after a mid-stream reset, recovered by the
+watchdog) recorded the sine in 100% of 1 ms blocks at −21.0 dB RMS with no
+glitches. The bridge firmware on the bench went through the same recovery
+on its own: silent clock at boot, TP-7 attached, reset, monitoring active.
+
+Not yet verified: a real project's playback through the TP-7 by ear, and a
+long session for xruns (the remaining P3 acceptance).
 
 ## P1 result
 
@@ -251,6 +289,6 @@ Each step ends with something to run on the bench, the same way the Pi phases di
 | **P0 — USB probe** (done, passed on the bench) | `firmware/esp32p4/tp7-probe` | TP-7 enumerates at high speed, switches to MTP, session opens, read throughput measured |
 | **P1 — Firmware skeleton** (done, boots on the bench) | ESP-IDF project in `firmware/esp32p4/bridge` building all portable layers as a component; `AW_PLATFORM=esp32p4`; null backends; `app_main` composition root | Boots; UI renders to the serial log |
 | P2 — Storage, display, input | `FatFsStorage`, SSD1306 over `esp_lcd`, encoder/buttons over GPIO | Create/open/save projects; navigate the UI on the OLED |
-| P3a — TP-7 playback probe (bus and feedback clean; listening test open) | `firmware/esp32p4/tp7-audio-probe`: UAC1 high-bandwidth isochronous OUT with a custom FIFO split and multi-count | Clean 1 kHz tone from the TP-7; feedback endpoint reports a rate |
-| P3 — Audio out through the TP-7 | `Tp7UsbAudioOutput`: engine's 48 kHz stereo converted with the Pi's `convertStereo48ToTp7Monitor96`, rate-matched to the feedback endpoint, sharing the USB host with MTP | Six-lane playback with no xruns over a long session |
+| **P3a — TP-7 playback probe** (done; the mutes were the cable) | `firmware/esp32p4/tp7-audio-probe`: UAC1 high-bandwidth isochronous OUT with a custom FIFO split and multi-count | Clean 1 kHz tone from the TP-7; feedback endpoint reports a rate |
+| **P3 — Audio out through the TP-7** (backend done, sine verified by recording; long session open) | `Tp7AudioOutput`: engine's 48 kHz stereo converted with the Pi's `convertStereo48ToTp7Monitor96`, rate-matched to the feedback endpoint, sharing the USB host with MTP | Six-lane playback with no xruns over a long session |
 | P4 — MTP | `EspUsbHost`, `EspMtpDevice`, `Tp7UsbMidiModeSwitcher`, built from the probe | Phase 8 acceptance (`docs/phase8-tp7-test.md`) on the P4 |

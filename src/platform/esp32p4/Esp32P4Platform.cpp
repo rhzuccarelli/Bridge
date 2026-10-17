@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "aw/core/Logger.hpp"
+#include "aw/platform/FallbackAudioOutput.hpp"
 #include "aw/platform/NullAudioOutput.hpp"
 #include "aw/platform/esp32p4/EspGpioInput.hpp"
 #include "aw/platform/esp32p4/EspSpiOledBus.hpp"
@@ -87,9 +88,13 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
         config.oled.sck >= 0 ? std::make_unique<EspSpiOledBus>(config.oled) : nullptr);
     platform.buttons = std::make_unique<EspGpioButtons>(config.pins);
     platform.encoder = std::make_unique<EspGpioEncoder>(config.pins);
-    platform.audioOutput = std::make_unique<NullAudioOutput>();
     platform.audioInput = nullptr;
     EspUsbBackends usb = createUsbBackends();
+    // Monitor audio through the TP-7 over USB. While it is unplugged or in MTP
+    // mode, the silent wall-clock output keeps the transport running, and
+    // refresh() switches back once the TP-7 returns to USB audio.
+    platform.audioOutput = std::make_unique<FallbackAudioOutput>(std::move(usb.audioOutput),
+                                                                 std::make_unique<NullAudioOutput>());
     platform.usb = std::move(usb.usb);
     platform.mtp = std::move(usb.mtp);
     platform.deviceMode = std::move(usb.deviceMode);
@@ -98,7 +103,7 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
         return core::makeError(core::ErrorCode::Unknown, "esp32p4 platform incomplete");
     }
     core::log::info(kModule, "platform ready: SPI OLED (mirrored to serial), GPIO encoder "
-                             "and buttons, USB host with TP-7 MTP, SD card storage; null audio");
+                             "and buttons, USB host with TP-7 MTP and monitor audio, SD card storage");
     return platform;
 }
 

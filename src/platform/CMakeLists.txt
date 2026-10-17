@@ -14,11 +14,12 @@
 ##
 ## ESP32-P4 firmware: none of the Linux backends exist there, so the assembly
 ## is built from its own sources plus the portable backend logic it shares
-## (the null audio clock and the SSD1306 protocol), and nothing else here is
+## (the null audio clock and its fallback chain, the SSD1306 protocol), and nothing else here is
 ## configured.  Linked against ESP-IDF components by their idf:: targets.
 ##
 if(AW_PLATFORM STREQUAL "esp32p4")
     add_library(aw_platform STATIC
+        FallbackAudioOutput.cpp
         NullAudioOutput.cpp
         esp32p4/Esp32P4Platform.cpp
         esp32p4/EspConsole.cpp
@@ -29,6 +30,8 @@ if(AW_PLATFORM STREQUAL "esp32p4")
         esp32p4/usb/BulkPipe.cpp
         esp32p4/usb/EspUsbStack.cpp
         esp32p4/usb/PtpSession.cpp
+        esp32p4/usb/Tp7AudioOutput.cpp
+        esp32p4/usb/Tp7MidiPort.cpp
         esp32p4/SerialPreviewDisplay.cpp
         oled/Ssd1306Display.cpp)
     add_library(aw::platform ALIAS aw_platform)
@@ -45,7 +48,8 @@ if(AW_PLATFORM STREQUAL "esp32p4")
                                 esp32p4/Esp32P4Platform.cpp esp32p4/EspUsb.cpp esp32p4/EspConsole.cpp
                                 esp32p4/FatFsStorage.cpp
                                 esp32p4/usb/BulkPipe.cpp esp32p4/usb/EspUsbStack.cpp
-                                esp32p4/usb/PtpSession.cpp
+                                esp32p4/usb/PtpSession.cpp esp32p4/usb/Tp7AudioOutput.cpp
+                                esp32p4/usb/Tp7MidiPort.cpp
         PROPERTIES COMPILE_OPTIONS "-Wno-pedantic;-Wno-old-style-cast")
     return()
 endif()

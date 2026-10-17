@@ -449,6 +449,10 @@ public:
                       : core::Status{core::makeError(core::ErrorCode::DeviceNotConnected)};
     }
     core::Status start() override { running_ = true; return core::success(); }
+    core::Status refresh() override {
+        ++refreshCalls;
+        return core::success();
+    }
     void stop() noexcept override { running_ = false; }
     void close() noexcept override { running_ = false; }
     bool isRunning() const noexcept override { return running_; }
@@ -457,6 +461,7 @@ public:
     core::FrameCount latencyFrames() const noexcept override { return frames_ * 2; }
 
     int openCalls{0};
+    int refreshCalls{0};
     void setOpens(bool opens) noexcept { opens_ = opens; }
 
 private:
@@ -512,6 +517,20 @@ AW_TEST(FallbackAudioOutput, ReconnectsPrimaryAfterStartingSilent) {
     AW_CHECK(!output.isUsingFallback());
     AW_CHECK(output.isRunning());
     AW_CHECK_EQ(primaryPtr->openCalls, 2);
+}
+
+AW_TEST(FallbackAudioOutput, LetsARunningPrimaryRefreshItself) {
+    // The ESP32-P4's TP-7 output runs its feedback watchdog from refresh().
+    auto primary = std::make_unique<FakeAudioBackend>(true);
+    FakeAudioBackend* primaryPtr = primary.get();
+    FallbackAudioOutput output{std::move(primary), std::make_unique<FakeAudioBackend>(true)};
+    TestRenderCallback callback;
+
+    AW_REQUIRE(output.open(core::kNativeFormat, 256, callback));
+    AW_REQUIRE(output.start());
+    AW_REQUIRE(output.refresh());
+    AW_CHECK_EQ(primaryPtr->refreshCalls, 1);
+    AW_CHECK(!output.isUsingFallback());
 }
 
 AW_TEST(AlsaPcm, PacksNormalizedFloatAsSigned24LittleEndian) {

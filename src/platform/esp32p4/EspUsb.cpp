@@ -10,9 +10,13 @@
 #include <vector>
 
 #include "aw/core/Logger.hpp"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "usb/BulkPipe.hpp"
 #include "usb/EspUsbStack.hpp"
 #include "usb/PtpSession.hpp"
+#include "usb/Tp7AudioOutput.hpp"
+#include "usb/Tp7MidiPort.hpp"
 
 namespace aw::platform::esp32p4 {
 namespace {
@@ -83,7 +87,8 @@ std::vector<std::uint8_t> packSysEx(std::span<const std::uint8_t> bytes) {
 
 class EspTp7ModeSwitcher final : public hal::DeviceModeInterface {
 public:
-    explicit EspTp7ModeSwitcher(std::shared_ptr<EspUsbStack> stack) : stack_{std::move(stack)} {}
+    EspTp7ModeSwitcher(std::shared_ptr<EspUsbStack> stack, std::shared_ptr<usb::Tp7MidiPort> midi)
+        : stack_{std::move(stack)}, midi_{std::move(midi)} {}
 
     core::Status requestMtpMode() override {
         for (const hal::UsbDeviceInfo& device : stack_->devices()) {
@@ -91,37 +96,14 @@ public:
                 return core::success();  // Already in MTP mode.
             }
         }
-        const auto lease = stack_->acquire([](const hal::UsbDeviceInfo& info, const usb::Layout& layout) {
-            return info.vendorId == kTeenageEngineering && layout.hasMidiOut;
-        });
-        if (!lease) {
-            return core::makeError(core::ErrorCode::DeviceNotConnected, "TP-7 not connected");
-        }
-        const usb::Layout& layout = lease->layout;
-        core::Status result = core::success();
-        if (usb_host_interface_claim(stack_->client(), lease->handle, layout.midiInterface,
-                                     layout.midiAlternate) != ESP_OK) {
-            result = core::makeError(core::ErrorCode::DeviceBusy, "cannot claim TP-7 MIDI");
-        } else {
-            {
-                BulkPipe out{lease->handle, layout.midiOut.address, layout.midiOut.maxPacket};
-                const auto packets = packSysEx(kEnterMtp);
-                if (out.init(64) != ESP_OK || out.write(packets, false, 1000) != ESP_OK) {
-                    result = core::makeError(core::ErrorCode::IoError,
-                                             std::string{"MTP SysEx failed: "} +
-                                                 usb::transferStatusName(out.lastStatus()));
-                }
-            }
-            // The TP-7 may already be re-enumerating; a failed release is moot.
-            (void)usb_host_interface_release(stack_->client(), lease->handle, layout.midiInterface);
-        }
-        stack_->release(*lease);
+        const core::Status result = midi_->send(packSysEx(kEnterMtp));
         if (result) core::log::info(kModule, "asked the TP-7 to switch to MTP");
         return result;
     }
 
 private:
     std::shared_ptr<EspUsbStack> stack_;
+    std::shared_ptr<usb::Tp7MidiPort> midi_;
 };
 
 // --- MTP --------------------------------------------------------------------
@@ -469,6 +451,52 @@ private:
     std::atomic<bool> hasSession_{false};
 };
 
+// --- TP-7 reset -------------------------------------------------------------
+
+/// Makes a TP-7 in USB-audio mode re-enumerate, on a task of its own: the MTP
+/// SysEx, then a PTP session opened and closed, which sends it back to audio.
+/// `Tp7AudioOutput` asks for this when the TP-7's feedback is stuck.
+void resetTp7(std::shared_ptr<EspUsbStack> stack, std::shared_ptr<usb::Tp7MidiPort> midi,
+              hal::MTPInterface& mtp) {
+    static std::atomic<bool> busy{false};
+    if (busy.exchange(true)) return;
+    struct Job {
+        std::shared_ptr<EspUsbStack> stack;
+        std::shared_ptr<usb::Tp7MidiPort> midi;
+        hal::MTPInterface* mtp;
+    };
+    auto* job = new Job{std::move(stack), std::move(midi), &mtp};
+    const auto run = [](void* context) {
+        std::unique_ptr<Job> job{static_cast<Job*>(context)};
+        if (auto status = job->midi->send(packSysEx(kEnterMtp)); !status) {
+            core::log::warning(kModule, "TP-7 reset: " + status.error().describe());
+        } else {
+            std::optional<hal::UsbDeviceInfo> device;
+            for (int i = 0; i < 80 && !device; ++i) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                for (const hal::UsbDeviceInfo& info : job->stack->devices())
+                    if (info.vendorId == kTeenageEngineering && info.supportsMtp) device = info;
+            }
+            if (!device) {
+                core::log::warning(kModule, "TP-7 reset: it did not come back in MTP mode");
+            } else if (job->mtp->hasSession()) {
+                core::log::info(kModule, "TP-7 reset: an MTP session is open; leaving it in MTP mode");
+            } else if (auto status = job->mtp->openSession(device->key()); status) {
+                job->mtp->closeSession();  // Closing the session returns it to USB audio.
+                core::log::info(kModule, "TP-7 reset: back to USB audio");
+            } else {
+                core::log::warning(kModule, "TP-7 reset: " + status.error().describe());
+            }
+        }
+        busy.store(false);
+        vTaskDelete(nullptr);
+    };
+    if (xTaskCreate(run, "tp7_reset", 6144, job, 4, nullptr) != pdPASS) {
+        delete job;
+        busy.store(false);
+    }
+}
+
 }  // namespace
 
 EspUsbBackends createUsbBackends() {
@@ -476,7 +504,13 @@ EspUsbBackends createUsbBackends() {
     EspUsbBackends backends;
     backends.usb = std::make_unique<EspUsbHost>(stack);
     backends.mtp = std::make_unique<EspMtpDevice>(stack);
-    backends.deviceMode = std::make_unique<EspTp7ModeSwitcher>(stack);
+    auto midi = std::make_shared<usb::Tp7MidiPort>(stack);
+    backends.deviceMode = std::make_unique<EspTp7ModeSwitcher>(stack, midi);
+    auto audio = std::make_unique<usb::Tp7AudioOutput>(stack);
+    audio->setDeviceResetHook(
+        [stack, midi, mtp = backends.mtp.get()] { resetTp7(stack, midi, *mtp); });
+    backends.audioOutput = std::move(audio);
+    backends.sendMidi = [midi](std::span<const std::uint8_t> packets) { return midi->send(packets); };
     return backends;
 }
 

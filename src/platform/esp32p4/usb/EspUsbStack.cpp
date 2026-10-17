@@ -16,7 +16,10 @@ namespace {
 constexpr std::string_view kModule = "usb";
 
 constexpr std::uint8_t kClassAudio = 0x01;
+constexpr std::uint8_t kSubclassAudioStreaming = 0x02;
 constexpr std::uint8_t kSubclassMidiStreaming = 0x03;
+constexpr std::uint8_t kDescriptorCsInterface = 0x24;
+constexpr std::uint8_t kAsFormatType = 0x02;
 constexpr std::uint8_t kClassStillImage = 0x06;
 constexpr std::uint8_t kClassVendor = 0xFF;
 
@@ -31,9 +34,10 @@ std::string toAscii(const usb_str_desc_t* descriptor) {
     return text;
 }
 
-/// The probe's classifier: an MTP interface is Still Image (or vendor, as some
+/// The probes' classifier: an MTP interface is Still Image (or vendor, as some
 /// devices declare it) with bulk IN, bulk OUT and an interrupt IN; MIDI OUT is
-/// the bulk OUT endpoint of a MIDI Streaming interface.
+/// the bulk OUT endpoint of a MIDI Streaming interface; playback is the first
+/// audio-streaming alternate setting with an isochronous OUT endpoint.
 Layout classify(const usb_config_desc_t* config) {
     Layout layout;
     if (config == nullptr) return layout;
@@ -43,9 +47,24 @@ Layout classify(const usb_config_desc_t* config) {
     Endpoint in;
     Endpoint out;
     bool hasInterruptIn = false;
+    Layout::Playback playback;
+    struct IsocIn {
+        std::uint8_t address;
+        std::uint16_t maxPacket;
+        int interval;
+    };
+    std::vector<IsocIn> isocIn;
 
     auto finishInterface = [&] {
         if (current == nullptr) return;
+        if (!layout.playback.found && playback.found) {
+            for (const IsocIn& endpoint : isocIn) {
+                if (endpoint.address != playback.feedbackEndpoint) continue;
+                playback.feedbackMaxPacket = endpoint.maxPacket;
+                playback.feedbackIntervalMicroframes = endpoint.interval;
+            }
+            layout.playback = playback;
+        }
         const bool mtpShaped = in.address != 0 && out.address != 0 && hasInterruptIn;
         if (!layout.hasMtp && mtpShaped &&
             (current->bInterfaceClass == kClassStillImage ||
@@ -62,6 +81,7 @@ Layout classify(const usb_config_desc_t* config) {
             layout.midiInterface = current->bInterfaceNumber;
             layout.midiAlternate = current->bAlternateSetting;
             layout.midiOut = out;
+            layout.midiIn = in;
         }
     };
 
@@ -72,6 +92,19 @@ Layout classify(const usb_config_desc_t* config) {
             in = {};
             out = {};
             hasInterruptIn = false;
+            playback = {};
+            playback.interface = current->bInterfaceNumber;
+            playback.alternate = current->bAlternateSetting;
+            isocIn.clear();
+        } else if (descriptor->bDescriptorType == kDescriptorCsInterface && current != nullptr &&
+                   current->bInterfaceClass == kClassAudio &&
+                   current->bInterfaceSubClass == kSubclassAudioStreaming) {
+            // UAC1 Type I format descriptor: bNrChannels, bSubframeSize.
+            const auto* raw = reinterpret_cast<const std::uint8_t*>(descriptor);
+            if (raw[0] >= 8 && raw[2] == kAsFormatType) {
+                playback.channels = raw[4];
+                playback.subslot = raw[5];
+            }
         } else if (descriptor->bDescriptorType == USB_B_DESCRIPTOR_TYPE_ENDPOINT &&
                    current != nullptr) {
             const auto* ep = reinterpret_cast<const usb_ep_desc_t*>(descriptor);
@@ -81,6 +114,22 @@ Layout classify(const usb_config_desc_t* config) {
                                     static_cast<std::uint16_t>(ep->wMaxPacketSize & 0x7FF)};
             if (type == USB_BM_ATTRIBUTES_XFER_BULK) (isIn ? in : out) = endpoint;
             if (type == USB_BM_ATTRIBUTES_XFER_INT && isIn) hasInterruptIn = true;
+            if (type == USB_BM_ATTRIBUTES_XFER_ISOC && current->bInterfaceClass == kClassAudio &&
+                current->bInterfaceSubClass == kSubclassAudioStreaming) {
+                const int interval = 1 << (std::clamp<int>(ep->bInterval, 1, 16) - 1);  // High speed.
+                if (isIn) {
+                    isocIn.push_back({ep->bEndpointAddress, endpoint.maxPacket, interval});
+                } else if (!playback.found) {
+                    playback.found = true;
+                    playback.endpoint = ep->bEndpointAddress;
+                    playback.maxPacket = endpoint.maxPacket;
+                    playback.transactions = 1 + ((ep->wMaxPacketSize >> 11) & 3);
+                    playback.intervalMicroframes = interval;
+                    // UAC1 endpoint descriptors are 9 bytes: bRefresh, then bSynchAddress.
+                    playback.feedbackEndpoint =
+                        ep->bLength >= 9 ? reinterpret_cast<const std::uint8_t*>(ep)[8] : 0;
+                }
+            }
         }
     }
     finishInterface();
@@ -104,7 +153,9 @@ core::Status EspUsbStack::start() {
     if (hotplug_ == nullptr || installed == nullptr) {
         return core::makeError(core::ErrorCode::OutOfMemory, "USB host queues");
     }
-    if (xTaskCreatePinnedToCore(&EspUsbStack::hostTask, "usb_host", 4096, installed, 6, nullptr,
+    // Above the engine's streaming and UI threads: isochronous playback has a
+    // few milliseconds of transfers queued, and both tasks carry completions.
+    if (xTaskCreatePinnedToCore(&EspUsbStack::hostTask, "usb_host", 4096, installed, 19, nullptr,
                                 0) != pdPASS) {
         return core::makeError(core::ErrorCode::OutOfMemory, "USB host task");
     }
@@ -120,7 +171,7 @@ core::Status EspUsbStack::start() {
         return core::makeError(core::ErrorCode::IoError,
                                std::string{"USB client: "} + esp_err_to_name(err));
     }
-    if (xTaskCreatePinnedToCore(&EspUsbStack::clientTask, "usb_client", 4096, this, 5, nullptr,
+    if (xTaskCreatePinnedToCore(&EspUsbStack::clientTask, "usb_client", 4096, this, 18, nullptr,
                                 0) != pdPASS ||
         xTaskCreate(&EspUsbStack::hotplugTask, "usb_hotplug", 6144, this, 4, nullptr) != pdPASS) {
         return core::makeError(core::ErrorCode::OutOfMemory, "USB client tasks");
@@ -134,6 +185,13 @@ void EspUsbStack::hostTask(void* installed) {
     usb_host_config_t config{};
     config.intr_flags = ESP_INTR_FLAG_LEVEL1;
     config.peripheral_map = BIT0;  // The high-speed OTG controller.
+    // The controller's FIFO is 896 lines of 4 bytes. The default split leaves
+    // periodic TX 512 bytes, which rejects the TP-7's 882-byte playback
+    // endpoint; one microframe of its playback is 2 x 882 bytes. Bulk IN for
+    // MTP still fits a 512-byte packet in the 1280-byte RX FIFO.
+    config.fifo_settings_custom.nptx_fifo_lines = 128;
+    config.fifo_settings_custom.ptx_fifo_lines = 448;
+    config.fifo_settings_custom.rx_fifo_lines = 896 - 128 - 448;
     ESP_ERROR_CHECK(usb_host_install(&config));
     xSemaphoreGive(static_cast<SemaphoreHandle_t>(installed));
     for (;;) {
@@ -204,7 +262,8 @@ void EspUsbStack::attach(std::uint8_t address) {
                                  hex4(entry.info.productId) + " '" + entry.info.product + "'" +
                                  (details.speed == USB_SPEED_HIGH ? ", high speed" : ", NOT high speed") +
                                  (entry.layout.hasMtp ? ", MTP" : "") +
-                                 (entry.layout.hasMidiOut ? ", MIDI OUT" : ""));
+                                 (entry.layout.hasMidiOut ? ", MIDI OUT" : "") +
+                                 (entry.layout.playback.found ? ", audio playback" : ""));
 
     hal::UsbHotplugListener* listener = nullptr;
     const hal::UsbDeviceInfo info = entry.info;
@@ -213,6 +272,7 @@ void EspUsbStack::attach(std::uint8_t address) {
         devices_.push_back(std::move(entry));
         listener = listener_;
     }
+    for (hal::UsbHotplugListener* internal : internalListeners_) internal->onUsbDeviceAttached(info);
     if (listener != nullptr) listener->onUsbDeviceAttached(info);
 }
 
@@ -233,12 +293,18 @@ void EspUsbStack::detach(usb_device_handle_t handle) {
     // A lease holder (the MTP session) sees isGone() from here on and skips
     // any I/O when the listener closes it.
     if (listener != nullptr) listener->onUsbDeviceDetached(info);
+    for (hal::UsbHotplugListener* internal : internalListeners_) internal->onUsbDeviceDetached(info);
 }
 
 void EspUsbStack::closeIfUnused(std::vector<Attached>::iterator device) {
     if (!device->gone || device->leases > 0) return;
     usb_host_device_close(client_, device->handle);
     devices_.erase(device);
+}
+
+void EspUsbStack::addInternalListener(hal::UsbHotplugListener* listener) {
+    std::lock_guard lock{mutex_};
+    internalListeners_.push_back(listener);
 }
 
 void EspUsbStack::setListener(hal::UsbHotplugListener* listener) noexcept {

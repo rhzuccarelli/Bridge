@@ -26,12 +26,30 @@ struct Layout {
     std::uint8_t midiInterface{0};
     std::uint8_t midiAlternate{0};
     Endpoint midiOut;
+    Endpoint midiIn;  ///< Address 0 when the interface has none.
 
     bool hasMtp{false};
     std::uint8_t mtpInterface{0};
     std::uint8_t mtpAlternate{0};
     Endpoint bulkIn;
     Endpoint bulkOut;
+
+    /// The first audio-streaming alternate setting with an isochronous OUT
+    /// endpoint (UAC1), and the feedback endpoint its bSynchAddress names.
+    struct Playback {
+        bool found{false};
+        std::uint8_t interface{0};
+        std::uint8_t alternate{0};
+        std::uint8_t endpoint{0};
+        std::uint16_t maxPacket{0};        ///< Bytes per transaction.
+        int transactions{1};               ///< Per microframe (wMaxPacketSize bits 12:11, plus 1).
+        int intervalMicroframes{1};
+        int channels{0};
+        int subslot{0};                    ///< Bytes per sample.
+        std::uint8_t feedbackEndpoint{0};  ///< 0 when the endpoint has none.
+        std::uint16_t feedbackMaxPacket{0};
+        int feedbackIntervalMicroframes{1};
+    } playback;
 };
 
 /// A device borrowed for I/O. The stack keeps it open until every lease is
@@ -62,6 +80,11 @@ public:
     /// is never uninstalled: on the device it lives as long as the firmware.
     core::Status start();
     void setListener(hal::UsbHotplugListener* listener) noexcept;
+
+    /// Backends that keep something open while a device is attached (the TP-7
+    /// MIDI port). Told on the hotplug task, before the application's listener
+    /// on attach and after it on detach. Add before `start()`.
+    void addInternalListener(hal::UsbHotplugListener* listener);
     [[nodiscard]] std::vector<hal::UsbDeviceInfo> devices() const;
 
     /// Leases the first attached device that `match` accepts.
@@ -100,6 +123,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<Attached> devices_;
     hal::UsbHotplugListener* listener_{nullptr};
+    std::vector<hal::UsbHotplugListener*> internalListeners_;
     usb_host_client_handle_t client_{nullptr};
     QueueHandle_t hotplug_{nullptr};
     bool started_{false};

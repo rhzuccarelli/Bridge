@@ -49,7 +49,7 @@ core::Status FallbackAudioOutput::refresh() {
     if (selected_ == nullptr || callback_ == nullptr) return core::success();
 
     if (selected_ == primary_.get()) {
-        if (primary_->isRunning()) return core::success();
+        if (primary_->isRunning()) return primary_->refresh();
         primary_->close();
         if (auto status = fallback_->open(requestedFormat_, requestedBufferFrames_, *callback_);
             !status) return status;
