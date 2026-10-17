@@ -96,8 +96,14 @@ core::Result<std::unique_ptr<FatFsStorage>> FatFsStorage::mount(const SdCardConf
                                  std::to_string(bytes >> 20) + " MiB, " +
                                  std::to_string(card->real_freq_khz / 1000) + " MHz, mounted at " +
                                  config.mountPoint);
-    return std::unique_ptr<FatFsStorage>{
+    auto storage = std::unique_ptr<FatFsStorage>{
         new FatFsStorage{config.mountPoint, card, std::move(projectsRoot)}};
+    if (auto free = storage->freeSpaceBytes(storage->projectsRoot()); free) {
+        core::log::info(kModule, std::to_string(free.value() >> 20) + " MiB free");
+    } else {
+        core::log::warning(kModule, free.error().describe());
+    }
+    return storage;
 }
 
 FatFsStorage::FatFsStorage(const char* mountPoint, void* card, core::Path projectsRoot)

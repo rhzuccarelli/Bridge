@@ -1,5 +1,7 @@
 #include "aw/project/ImportService.hpp"
 
+#include <string>
+
 #include "aw/audio/WavReader.hpp"
 #include "aw/core/Logger.hpp"
 #include "aw/project/Command.hpp"
@@ -108,7 +110,10 @@ core::Status ImportService::validate(const ImportPlan& plan) const {
     auto free = storage_.freeSpaceBytes(projects_.project().paths().audioDirectory());
     if (!free) return free.error();
     if (free.value() < plan.totalBytes())
-        return core::makeError(core::ErrorCode::OutOfSpace, "not enough local space for import");
+        return core::makeError(core::ErrorCode::OutOfSpace,
+                               "not enough local space for import: need " +
+                                   std::to_string(plan.totalBytes() >> 20) + " MiB, " +
+                                   std::to_string(free.value() >> 20) + " MiB free");
     return core::success();
 }
 
