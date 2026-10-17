@@ -764,21 +764,23 @@ struct Variant {
     /// missing, repeated or reordered frames anywhere.
     bool ramp{false};
     int rateMilli{96000};  ///< Sizing::TP7Rate: frames per ms, times 1000.
+    int feedbackTransfers{1};  ///< Feedback transfers kept queued.
+    int feedbackPackets{61};   ///< 1 ms polls per feedback transfer (capped by the list).
 };
 /// Fifth pass. A sweep of all four starting PIDs played nothing, while the
 /// TP-7 plays USB audio from a Mac. This splits "the TP-7 accepts nothing
 /// from the P4" from "the two-transaction microframe is what fails": the
 /// first variant sends one plain 882-byte transaction per millisecond (49
 /// frames, half of what the TP-7 consumes, so it will be choppy).
-/// A frame-numbering ramp showed every frame arrives intact and in order, but
-/// the TP-7 mutes 8-11 ms stretches and drops 2 frames in each: overflow
-/// slips, about 57 frames/s, while following a feedback stuck at 96.000.
-/// This sweeps fixed rates to find the TP-7's real one.
+/// The TP-7 mutes P4 sines but not a Mac's or Linux's. It mutes more when
+/// feedback reads fail, and the probe's feedback polling pauses at every
+/// transfer restart (one 7-poll transfer), where Linux polls every 1 ms with
+/// several transfers queued. Upstream microframes (audio 3, feedback 4).
 constexpr Variant kVariants[] = {
-    {"RAMP at 95.900 frames/ms", 660, Sizing::TP7Rate, 3, 4, 3, 2, 96, false, -18, false, true, 95900},
-    {"RAMP at 95.940 frames/ms", 660, Sizing::TP7Rate, 3, 4, 3, 2, 96, false, -18, false, true, 95940},
-    {"RAMP at 95.970 frames/ms", 660, Sizing::TP7Rate, 3, 4, 3, 2, 96, false, -18, false, true, 95970},
-    {"RAMP at 96.000 frames/ms", 660, Sizing::TP7Rate, 3, 4, 3, 2, 96, false, -18, false, true, 96000},
+    {"sine, feedback: 1 transfer x 7 polls (as before)", 660, Sizing::Feedback, 3, 4, 3, 2, 96,
+     false, -18, false, false, 96000, 1, 61},
+    {"sine, feedback: 3 transfers x 4 polls, continuous", 660, Sizing::Feedback, 3, 4, 3, 2, 96,
+     false, -18, false, false, 96000, 3, 4},
 };
 constexpr int kVariantSeconds = 8;
 int g_variant = 0;
@@ -883,7 +885,7 @@ struct Stream {
     std::atomic<bool> running{false};
     std::atomic<int> inFlight{0};
     std::vector<usb_transfer_t*> transfers;
-    usb_transfer_t* feedback{nullptr};
+    std::vector<usb_transfer_t*> feedbacks;
     Stats stats;
 
     /// Frames per millisecond in Q16.16. Starts at nominal; the feedback
@@ -1158,21 +1160,26 @@ bool startStream(usb_host_client_handle_t client, usb_device_handle_t device,
         transfer->context = &stream;
         stream.transfers.push_back(transfer);
     }
-    // Feedback transfers: whole packets, as many as the descriptor list holds.
+    // Feedback transfers. Linux keeps several queued so the TP-7 is polled
+    // every millisecond; one transfer leaves a gap at every restart.
     if (playback.feedbackEndpoint != 0 && playback.feedbackMaxPacket > 0 &&
         playback.feedbackIntervalMicroframes <= kUsableIsocDescriptors) {
-        const int packets = std::max(1, kUsableIsocDescriptors / playback.feedbackIntervalMicroframes);
-        if (usb_host_transfer_alloc(static_cast<std::size_t>(playback.feedbackMaxPacket * packets),
-                                    packets, &stream.feedback) == ESP_OK) {
-            stream.feedback->device_handle = device;
-            stream.feedback->bEndpointAddress = playback.feedbackEndpoint;
-            stream.feedback->callback = &feedbackDone;
-            stream.feedback->context = &stream;
-            stream.feedback->num_bytes = playback.feedbackMaxPacket * packets;
+        const int packets =
+            std::min(kVariants[g_variant].feedbackPackets,
+                     std::max(1, kUsableIsocDescriptors / playback.feedbackIntervalMicroframes));
+        for (int t = 0; t < kVariants[g_variant].feedbackTransfers; ++t) {
+            usb_transfer_t* feedback = nullptr;
+            if (usb_host_transfer_alloc(static_cast<std::size_t>(playback.feedbackMaxPacket * packets),
+                                        packets, &feedback) != ESP_OK)
+                break;
+            feedback->device_handle = device;
+            feedback->bEndpointAddress = playback.feedbackEndpoint;
+            feedback->callback = &feedbackDone;
+            feedback->context = &stream;
+            feedback->num_bytes = playback.feedbackMaxPacket * packets;
             for (int i = 0; i < packets; ++i)
-                stream.feedback->isoc_packet_desc[i].num_bytes = playback.feedbackMaxPacket;
-            std::memset(stream.feedback->data_buffer, 0xEE,
-                        static_cast<std::size_t>(stream.feedback->num_bytes));
+                feedback->isoc_packet_desc[i].num_bytes = playback.feedbackMaxPacket;
+            stream.feedbacks.push_back(feedback);
         }
     } else if (playback.feedbackEndpoint != 0) {
         ESP_LOGW(kTag, "feedback ep 0x%02x interval %d uframes does not fit one transfer; "
@@ -1180,9 +1187,9 @@ bool startStream(usb_host_client_handle_t client, usb_device_handle_t device,
                  playback.feedbackIntervalMicroframes);
     }
 
-    if (stream.feedback != nullptr) {
+    for (usb_transfer_t* feedback : stream.feedbacks) {
         stream.inFlight.fetch_add(1, std::memory_order_acq_rel);
-        if (const esp_err_t err = usb_host_transfer_submit(stream.feedback); err != ESP_OK) {
+        if (const esp_err_t err = usb_host_transfer_submit(feedback); err != ESP_OK) {
             stream.inFlight.fetch_sub(1, std::memory_order_acq_rel);
             ESP_LOGE(kTag, "feedback submit failed: %s", esp_err_to_name(err));
         }
@@ -1221,8 +1228,8 @@ void stopStream(usb_host_client_handle_t client, bool deviceGone, bool closeDevi
     }
     for (usb_transfer_t* transfer : stream.transfers) usb_host_transfer_free(transfer);
     stream.transfers.clear();
-    if (stream.feedback != nullptr) usb_host_transfer_free(stream.feedback);
-    stream.feedback = nullptr;
+    for (usb_transfer_t* feedback : stream.feedbacks) usb_host_transfer_free(feedback);
+    stream.feedbacks.clear();
     if (!deviceGone) {
         // Alternate setting 0 has no endpoints: the TP-7 stops expecting audio.
         (void)setInterface(client, stream.device, stream.playback.interface, 0);
@@ -1427,6 +1434,7 @@ void listenMidi(usb_host_client_handle_t client, std::uint8_t address) {
     usb_host_interface_release(client, device, 3);
     usb_host_device_close(client, device);
 }
+
 
 extern "C" void app_main(void) {
     enableVbus();

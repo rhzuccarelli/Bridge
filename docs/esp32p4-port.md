@@ -134,10 +134,24 @@ from the caller, none of which needs a patched ESP-IDF:
 On the bench, playback runs at 1000 packets/s and 96 000 frames/s with no
 failed packets, and feedback arrives with no errors.
 
-Listening tests: the tone plays, but with heavy artifacts whenever packet
-sizes follow the feedback, 4-byte aligned or not. A fixed 96 frames per
-packet is nearly clean. The probe now checks whether any change in packet
-size causes it, or only following the feedback (see its README).
+Recorded tests (the probe's automatic lab: it arms the TP-7 over USB-MIDI,
+records, switches to MTP and fetches the take): coded packets and a
+frame-numbering ramp arrived intact, but sines were muted in 8–11 ms
+stretches, while squares were not. A Mac and a Raspberry Pi played the same
+sine cleanly. The cause was the wiring between the Pico's USB pins and the TP-7
+(a 200 mm JST lead into a USB-C socket, then a USB-C cable). Isochronous OUT
+has no handshake, so the TP-7 silently drops a corrupted packet. With a new
+cable (2026-10-17), four takes in a row recorded the −18 dBFS sine in 100% of
+1 ms blocks, at −21.0 dB RMS, with no glitches, and packet sizes following the
+feedback. Keep the USB data leads short and twisted.
+
+Open issue for the backend: after the P4 boots, the feedback endpoint
+answers only with empty packets until the TP-7 has been re-enumerated once
+(after an MTP round trip it reports normally, about 96.003 frames/ms). With
+no feedback the probe sends a fixed 96 frames/ms, and after about 13 s the
+TP-7's buffer reaches its limit and slips a sample every 4 ms (audible as a
+fine crackle). `Tp7UsbAudioOutput` must get feedback going at attach, or
+estimate the rate some other way.
 
 ## P1 result
 

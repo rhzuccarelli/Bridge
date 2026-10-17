@@ -16,7 +16,10 @@ while time.time() < end:
         raw, buf = buf.split(b'\n', 1)
         line = raw.decode('latin1').rstrip('\r')
         if line.startswith('B64 ') and take is not None:
-            take['data'].extend(base64.b64decode(line[4:]))
+            try:
+                take['data'].extend(base64.b64decode(line[4:]))
+            except Exception:
+                take['bad'] = take.get('bad', 0) + 1  # A corrupted serial line: the CRC will say.
             continue
         log.write(line + '\n'); log.flush()
         if line.startswith('LABTAKE '):
