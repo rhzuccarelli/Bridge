@@ -18,12 +18,18 @@ namespace aw::platform::esp32p4::usb {
 class BulkPipe {
 public:
     BulkPipe(usb_device_handle_t device, std::uint8_t endpoint, std::uint16_t maxPacket);
+    /// Uses `borrowed` (allocated by the caller, kept after this pipe is
+    /// gone) instead of allocating a transfer in `init`. For buffers that must
+    /// not depend on how fragmented internal RAM is by the time they are needed.
+    BulkPipe(usb_device_handle_t device, std::uint8_t endpoint, std::uint16_t maxPacket,
+             usb_transfer_t* borrowed);
     ~BulkPipe();
 
     BulkPipe(const BulkPipe&) = delete;
     BulkPipe& operator=(const BulkPipe&) = delete;
 
-    /// Allocates the transfer buffer, rounded up to a whole number of packets.
+    /// Allocates the transfer buffer, rounded up to a whole number of packets
+    /// (a borrowed transfer keeps its own size).
     esp_err_t init(std::size_t bufferBytes);
 
     /// Sends `data`, splitting it across transfers when it is larger than the
@@ -52,6 +58,7 @@ private:
     std::uint8_t endpoint_;
     std::uint16_t maxPacket_;
     usb_transfer_t* transfer_{nullptr};
+    bool borrowed_{false};
     SemaphoreHandle_t done_{nullptr};
     usb_transfer_status_t lastStatus_{USB_TRANSFER_STATUS_COMPLETED};
 };

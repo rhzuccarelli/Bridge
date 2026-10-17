@@ -37,7 +37,9 @@ extern "C" void app_main(void) {
     }
     core::log::info("main", "free heap: internal " +
                                 std::to_string(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024) +
-                                " KiB, PSRAM " +
+                                " KiB (largest DMA block " +
+                                std::to_string(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) / 1024) +
+                                " KiB), PSRAM " +
                                 std::to_string(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024) +
                                 " KiB");
 

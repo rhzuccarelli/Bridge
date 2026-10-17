@@ -245,6 +245,9 @@ core::Result<std::unique_ptr<FatFsStorage>> FatFsStorage::mount(const SdCardConf
                                  config.mountPoint);
     auto storage = std::unique_ptr<FatFsStorage>{
         new FatFsStorage{config.mountPoint, card, std::move(projectsRoot)}};
+    // The shared transfer buffer, now, while internal RAM is unfragmented.
+    if (bounce().data == nullptr)
+        core::log::warning(kModule, "no internal DMA buffer; large transfers will be slow");
     if (auto free = storage->freeSpaceBytes(storage->projectsRoot()); free) {
         core::log::info(kModule, std::to_string(free.value() >> 20) + " MiB free");
     } else {

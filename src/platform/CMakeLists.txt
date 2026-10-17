@@ -19,10 +19,13 @@
 ##
 if(AW_PLATFORM STREQUAL "esp32p4")
     add_library(aw_platform STATIC
+        CompositeButtons.cpp
+        CompositeEncoder.cpp
         FallbackAudioOutput.cpp
         NullAudioOutput.cpp
         esp32p4/Esp32P4Platform.cpp
         esp32p4/EspConsole.cpp
+        esp32p4/EspConsoleInput.cpp
         esp32p4/EspGpioInput.cpp
         esp32p4/EspSpiOledBus.cpp
         esp32p4/EspUsb.cpp
@@ -39,13 +42,14 @@ if(AW_PLATFORM STREQUAL "esp32p4")
     target_include_directories(aw_platform PUBLIC ${AW_INCLUDE_DIR})
     target_link_libraries(aw_platform
         PUBLIC aw::core aw::hal aw::compiler_options
-        PRIVATE idf::esp_timer idf::esp_driver_gpio idf::esp_driver_spi idf::usb idf::fatfs idf::sdmmc idf::esp_mm
+        PRIVATE idf::esp_timer idf::esp_driver_gpio idf::esp_driver_spi idf::usb idf::fatfs idf::sdmmc idf::esp_mm idf::esp_driver_uart
                 idf::esp_driver_sdmmc idf::pthread)
     # ESP-IDF register headers use GNU statement expressions, and FreeRTOS
     # macros expand to C casts in our own code. Per source file, because those
     # options come after aw::compiler_options on the command line.
     set_source_files_properties(esp32p4/EspGpioInput.cpp esp32p4/EspSpiOledBus.cpp
                                 esp32p4/Esp32P4Platform.cpp esp32p4/EspUsb.cpp esp32p4/EspConsole.cpp
+                                esp32p4/EspConsoleInput.cpp
                                 esp32p4/FatFsStorage.cpp
                                 esp32p4/usb/BulkPipe.cpp esp32p4/usb/EspUsbStack.cpp
                                 esp32p4/usb/PtpSession.cpp esp32p4/usb/Tp7AudioOutput.cpp

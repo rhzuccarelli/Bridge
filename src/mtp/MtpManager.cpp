@@ -51,11 +51,13 @@ core::Status MtpManager::connect() {
     if (auto status = mtp_.openSession(detectedDevice_->key()); !status) {
         state_ = ConnectionState::Error;
         lastError_ = status.error();
+        core::log::warning(kModule, "MTP session failed: " + status.error().describe());
         return status;
     }
 
     auto info = mtp_.deviceInfo();
     if (!info) {
+        core::log::warning(kModule, "MTP DeviceInfo failed: " + info.error().describe());
         mtp_.closeSession();
         state_ = ConnectionState::Error;
         lastError_ = info.error();
@@ -76,6 +78,22 @@ void MtpManager::disconnect() noexcept {
     if (state_ == ConnectionState::Connected) {
         state_ = detectedDevice_ ? ConnectionState::Detected : ConnectionState::Disconnected;
     }
+}
+
+void MtpManager::release() noexcept {
+    if (mtp_.hasSession()) {
+        disconnect();
+        return;
+    }
+    if (!detectedDevice_) return;
+    if (mtp_.openSession(detectedDevice_->key())) {
+        mtp_.closeSession();
+        core::log::info(kModule, "released the MTP device");
+    } else {
+        core::log::warning(kModule, "could not release the MTP device");
+    }
+    deviceInfo_.reset();
+    if (state_ != ConnectionState::Disconnected) state_ = ConnectionState::Detected;
 }
 
 core::Result<std::vector<hal::MtpStorageInfo>> MtpManager::storages() const {

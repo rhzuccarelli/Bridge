@@ -265,6 +265,21 @@ void EspUsbStack::attach(std::uint8_t address) {
                                  (entry.layout.hasMidiOut ? ", MIDI OUT" : "") +
                                  (entry.layout.playback.found ? ", audio playback" : ""));
 
+    if (!entry.layout.hasMtp && !entry.layout.hasMidiOut && !entry.layout.playback.found &&
+        config != nullptr) {
+        // A device Bridge cannot use: its descriptor, to see what it offers.
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(config);
+        for (int offset = 0; offset < config->wTotalLength; offset += 32) {
+            std::string hex;
+            char pair[4];
+            for (int i = offset; i < std::min<int>(config->wTotalLength, offset + 32); ++i) {
+                std::snprintf(pair, sizeof pair, "%02x", bytes[i]);
+                hex += pair;
+            }
+            core::log::info(kModule, "  descriptor " + hex);
+        }
+    }
+
     hal::UsbHotplugListener* listener = nullptr;
     const hal::UsbDeviceInfo info = entry.info;
     {

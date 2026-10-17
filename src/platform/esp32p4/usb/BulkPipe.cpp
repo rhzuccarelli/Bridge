@@ -10,8 +10,13 @@ namespace aw::platform::esp32p4::usb {
 BulkPipe::BulkPipe(usb_device_handle_t device, std::uint8_t endpoint, std::uint16_t maxPacket)
     : device_{device}, endpoint_{endpoint}, maxPacket_{maxPacket} {}
 
+BulkPipe::BulkPipe(usb_device_handle_t device, std::uint8_t endpoint, std::uint16_t maxPacket,
+                   usb_transfer_t* borrowed)
+    : device_{device}, endpoint_{endpoint}, maxPacket_{maxPacket}, transfer_{borrowed},
+      borrowed_{borrowed != nullptr} {}
+
 BulkPipe::~BulkPipe() {
-    if (transfer_ != nullptr) usb_host_transfer_free(transfer_);
+    if (transfer_ != nullptr && !borrowed_) usb_host_transfer_free(transfer_);
     if (done_ != nullptr) vSemaphoreDelete(done_);
 }
 
@@ -19,9 +24,12 @@ esp_err_t BulkPipe::init(std::size_t bufferBytes) {
     if (maxPacket_ == 0) return ESP_ERR_INVALID_ARG;
     done_ = xSemaphoreCreateBinary();
     if (done_ == nullptr) return ESP_ERR_NO_MEM;
-    const std::size_t rounded = usb_round_up_to_mps(static_cast<int>(bufferBytes), maxPacket_);
-    if (const esp_err_t err = usb_host_transfer_alloc(rounded, 0, &transfer_); err != ESP_OK)
-        return err;
+    if (!borrowed_) {
+        const std::size_t rounded = usb_round_up_to_mps(static_cast<int>(bufferBytes), maxPacket_);
+        if (const esp_err_t err = usb_host_transfer_alloc(rounded, 0, &transfer_); err != ESP_OK)
+            return err;
+    }
+    if (transfer_ == nullptr) return ESP_ERR_NO_MEM;
     transfer_->device_handle = device_;
     transfer_->bEndpointAddress = endpoint_;
     transfer_->callback = &BulkPipe::completed;

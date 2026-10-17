@@ -6,8 +6,11 @@
 #include <vector>
 
 #include "aw/core/Logger.hpp"
+#include "aw/platform/CompositeButtons.hpp"
+#include "aw/platform/CompositeEncoder.hpp"
 #include "aw/platform/FallbackAudioOutput.hpp"
 #include "aw/platform/NullAudioOutput.hpp"
+#include "aw/platform/esp32p4/EspConsoleInput.hpp"
 #include "aw/platform/esp32p4/EspGpioInput.hpp"
 #include "aw/platform/esp32p4/EspSpiOledBus.hpp"
 #include "aw/platform/esp32p4/EspUsb.hpp"
@@ -86,8 +89,16 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     platform.display = std::make_unique<SerialPreviewDisplay>(
         config.previewIntervalMillis,
         config.oled.sck >= 0 ? std::make_unique<EspSpiOledBus>(config.oled) : nullptr);
-    platform.buttons = std::make_unique<EspGpioButtons>(config.pins);
-    platform.encoder = std::make_unique<EspGpioEncoder>(config.pins);
+    // The panel, plus keys typed on the serial console (development input).
+    EspConsoleInput console;
+    auto buttons = std::make_unique<CompositeButtons>();
+    buttons->addSource(std::make_unique<EspGpioButtons>(config.pins));
+    buttons->addSource(console.buttons());
+    platform.buttons = std::move(buttons);
+    auto encoder = std::make_unique<CompositeEncoder>();
+    encoder->addSource(std::make_unique<EspGpioEncoder>(config.pins));
+    encoder->addSource(console.encoder());
+    platform.encoder = std::move(encoder);
     platform.audioInput = nullptr;
     EspUsbBackends usb = createUsbBackends();
     // Monitor audio through the TP-7 over USB. While it is unplugged or in MTP

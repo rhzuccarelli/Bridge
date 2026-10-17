@@ -50,9 +50,13 @@ public:
         }
         sessionOpen = true;
         lastKey = deviceKey;
+        ++opens;
         return core::success();
     }
-    void closeSession() noexcept override { sessionOpen = false; }
+    void closeSession() noexcept override {
+        if (sessionOpen) ++closes;
+        sessionOpen = false;
+    }
     bool hasSession() const noexcept override { return sessionOpen; }
 
     core::Result<hal::MtpDeviceInfo> deviceInfo() const override {
@@ -88,6 +92,8 @@ public:
 
     bool sessionOpen{false};
     bool failOpen{false};
+    int opens{0};
+    int closes{0};
     std::uint32_t lastKey{0};
     std::vector<hal::MtpObjectInfo> objects;
 };
@@ -240,4 +246,48 @@ AW_TEST(MtpBrowser, EntersAndLeavesOneFolderAtATime) {
     AW_CHECK_EQ(browser.entries()[0].name, std::string{"take.wav"});
     AW_REQUIRE(browser.goUp());
     AW_CHECK(!browser.canGoUp());
+}
+
+AW_TEST(MtpManager, ReleaseAfterAFailedConnectStillClosesASession) {
+    // A TP-7 leaves MTP mode only when a session closes; a failed connect
+    // (out of memory on the P4) used to leave it stuck there.
+    FakeUsb usb;
+    FakeMtp mtp;
+    events::EventQueue queue;
+    mtp::MtpManager manager{usb, mtp, queue};
+    AW_REQUIRE(static_cast<bool>(manager.start()));
+    usb.plug(makeTp7());
+
+    mtp.failOpen = true;
+    AW_REQUIRE(!manager.connect().hasValue());
+    mtp.failOpen = false;
+    manager.release();
+    AW_CHECK_EQ(mtp.opens, 1);
+    AW_CHECK_EQ(mtp.closes, 1);
+    AW_CHECK(!mtp.sessionOpen);
+    AW_CHECK_EQ(manager.state(), mtp::ConnectionState::Detected);
+}
+
+AW_TEST(MtpManager, ReleaseClosesAnOpenSession) {
+    FakeUsb usb;
+    FakeMtp mtp;
+    events::EventQueue queue;
+    mtp::MtpManager manager{usb, mtp, queue};
+    AW_REQUIRE(static_cast<bool>(manager.start()));
+    usb.plug(makeTp7());
+    AW_REQUIRE(static_cast<bool>(manager.connect()));
+
+    manager.release();
+    AW_CHECK_EQ(mtp.opens, 1);
+    AW_CHECK_EQ(mtp.closes, 1);
+    AW_CHECK_EQ(manager.state(), mtp::ConnectionState::Detected);
+}
+
+AW_TEST(MtpManager, ReleaseWithNoDeviceDoesNothing) {
+    FakeUsb usb;
+    FakeMtp mtp;
+    events::EventQueue queue;
+    mtp::MtpManager manager{usb, mtp, queue};
+    manager.release();
+    AW_CHECK_EQ(mtp.opens, 0);
 }

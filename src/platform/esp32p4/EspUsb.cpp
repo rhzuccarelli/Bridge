@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "aw/core/Logger.hpp"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "usb/BulkPipe.hpp"
@@ -141,8 +142,18 @@ core::Error transferError(std::uint16_t operation, esp_err_t err) {
 
 class EspMtpDevice final : public hal::MTPInterface {
 public:
-    explicit EspMtpDevice(std::shared_ptr<EspUsbStack> stack) : stack_{std::move(stack)} {}
-    ~EspMtpDevice() override { closeSession(); }
+    explicit EspMtpDevice(std::shared_ptr<EspUsbStack> stack) : stack_{std::move(stack)} {
+        // Allocated once, at boot: two 64 KiB blocks of internal DMA RAM. Asked
+        // for per session, they failed once a 12-channel deck was loaded and
+        // internal RAM was fragmented (238 KiB free, largest block 128 KiB).
+        (void)usb_host_transfer_alloc(kPipeBytes, 0, &outTransfer_);
+        (void)usb_host_transfer_alloc(kPipeBytes, 0, &inTransfer_);
+    }
+    ~EspMtpDevice() override {
+        closeSession();
+        if (outTransfer_ != nullptr) usb_host_transfer_free(outTransfer_);
+        if (inTransfer_ != nullptr) usb_host_transfer_free(inTransfer_);
+    }
 
     core::Status openSession(std::uint32_t deviceKey) override {
         std::lock_guard lock{mutex_};
@@ -164,11 +175,17 @@ public:
         reset.bRequest = 0x66;       // DEVICE_RESET_REQUEST
         reset.wIndex = layout.mtpInterface;
         (void)usb::controlTransfer(stack_->client(), lease->handle, reset, nullptr);
-        auto open = std::make_unique<Open>(*lease);
+        auto open = std::make_unique<Open>(*lease, outTransfer_, inTransfer_);
         if (open->out.init(kPipeBytes) != ESP_OK || open->in.init(kPipeBytes) != ESP_OK) {
             open_ = std::move(open);
             closeLocked();
-            return core::makeError(core::ErrorCode::OutOfMemory, "MTP transfer buffers");
+            return core::makeError(
+                core::ErrorCode::OutOfMemory,
+                "MTP transfer buffers (internal DMA RAM: " +
+                    std::to_string(heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) >> 10) +
+                    " KiB free, largest block " +
+                    std::to_string(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) >> 10) +
+                    " KiB)");
         }
         const esp_err_t err = open->session.open();
         open->opened = err == ESP_OK;
@@ -359,10 +376,10 @@ public:
 
 private:
     struct Open {
-        explicit Open(Lease held)
+        Open(Lease held, usb_transfer_t* outTransfer, usb_transfer_t* inTransfer)
             : lease{std::move(held)},
-              out{lease.handle, lease.layout.bulkOut.address, lease.layout.bulkOut.maxPacket},
-              in{lease.handle, lease.layout.bulkIn.address, lease.layout.bulkIn.maxPacket},
+              out{lease.handle, lease.layout.bulkOut.address, lease.layout.bulkOut.maxPacket, outTransfer},
+              in{lease.handle, lease.layout.bulkIn.address, lease.layout.bulkIn.maxPacket, inTransfer},
               session{out, in} {}
         Lease lease;
         BulkPipe out;
@@ -453,6 +470,8 @@ private:
     }
 
     std::shared_ptr<EspUsbStack> stack_;
+    usb_transfer_t* outTransfer_{nullptr};
+    usb_transfer_t* inTransfer_{nullptr};
     mutable std::mutex mutex_;
     std::unique_ptr<Open> open_;
     std::atomic<bool> hasSession_{false};

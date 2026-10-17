@@ -13,6 +13,8 @@ namespace {
 constexpr float kInt16Scale = 32768.0F;
 constexpr float kInt24Scale = 8388608.0F;
 constexpr float kInt32Scale = 2147483648.0F;
+/// Channel counts the packed 24-bit fast paths handle (a TP-7 file has 12).
+constexpr std::size_t kMaxFastChannels = 32;
 
 template <typename T>
 T readLittle(std::span<const std::byte> source, std::size_t offset) noexcept {
@@ -52,6 +54,26 @@ core::Status toFloat(std::span<const std::byte> source,
     const std::size_t bytesPerFrame = format.bytesPerFrame();
     if (source.size() < frameCount * bytesPerFrame) {
         return core::makeError(core::ErrorCode::InvalidArgument, "source span too short");
+    }
+
+    // Packed 24-bit, the format of every TP-7 file, in one tight loop: the
+    // general loop below cost about half of a 12-channel export on the P4.
+    // Same arithmetic as int24ToFloat; a 24-bit value is always inside [-1, 1).
+    if (format.sampleFormat == core::SampleFormat::Int24 && format.channels <= kMaxFastChannels) {
+        std::array<float*, kMaxFastChannels> out{};
+        for (core::ChannelCount channel = 0; channel < format.channels; ++channel)
+            out[channel] = destination[channel].data();
+        const auto* in = reinterpret_cast<const std::uint8_t*>(source.data());
+        for (std::size_t frame = 0; frame < frameCount; ++frame) {
+            for (core::ChannelCount channel = 0; channel < format.channels; ++channel, in += 3) {
+                const auto raw = static_cast<std::uint32_t>(in[0]) |
+                                 (static_cast<std::uint32_t>(in[1]) << 8) |
+                                 (static_cast<std::uint32_t>(in[2]) << 16);
+                const std::int32_t sample = static_cast<std::int32_t>(raw << 8) >> 8;
+                out[channel][frame] = static_cast<float>(sample) / kInt24Scale;
+            }
+        }
+        return core::success();
     }
 
     for (std::size_t frame = 0; frame < frameCount; ++frame) {
@@ -105,6 +127,25 @@ core::Status fromFloat(std::span<const std::span<const float>> source,
     if (destination.size() < frameCount * bytesPerFrame) {
         return core::makeError(core::ErrorCode::InvalidArgument,
                                "destination byte span too short");
+    }
+
+    // Packed 24-bit in one tight loop; same arithmetic as floatToInt24.
+    if (format.sampleFormat == core::SampleFormat::Int24 && format.channels <= kMaxFastChannels) {
+        std::array<const float*, kMaxFastChannels> in{};
+        for (core::ChannelCount channel = 0; channel < format.channels; ++channel)
+            in[channel] = source[channel].data();
+        auto* out = reinterpret_cast<std::uint8_t*>(destination.data());
+        for (std::size_t frame = 0; frame < frameCount; ++frame) {
+            for (core::ChannelCount channel = 0; channel < format.channels; ++channel, out += 3) {
+                const float clamped = clampUnit(in[channel][frame]);
+                const auto sample = static_cast<std::int32_t>(
+                    std::lrint(clamped >= 1.0F ? 8388607.0F : clamped * 8388608.0F));
+                out[0] = static_cast<std::uint8_t>(sample & 0xFF);
+                out[1] = static_cast<std::uint8_t>((sample >> 8) & 0xFF);
+                out[2] = static_cast<std::uint8_t>((sample >> 16) & 0xFF);
+            }
+        }
+        return core::success();
     }
 
     for (std::size_t frame = 0; frame < frameCount; ++frame) {

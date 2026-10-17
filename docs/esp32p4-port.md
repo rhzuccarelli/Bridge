@@ -279,6 +279,36 @@ under 4 KiB still go sector by sector (0.49 MiB/s at 1 KiB); nothing large
 writes that way. Overlapping the MTP reads with the SD writes would save at
 most the remaining 15 %.
 
+## Export: out of memory, TP-7 left in MTP mode (2026-10-17, in progress)
+
+Reproduced over the serial console (keys typed on the console now act as the
+panel: see `EspConsoleInput`; `firmware/esp32p4/bridge/tools/screen.py` sends
+keys and prints the screen, every screen change is logged as `ui screen …`).
+
+- **Out of memory.** With a 12-channel deck loaded, internal DMA RAM had
+  238 KiB free but no 64 KiB blocks left for the MTP session's two transfers.
+  `EspMtpDevice` now allocates them once at boot; the SD transfer buffer is
+  allocated at mount; allocations of 4 KiB or more go to PSRAM
+  (`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`).
+- **TP-7 stuck in MTP mode.** A failed session left nobody to close one.
+  `MtpManager::release()` opens and closes a session when none is open; the
+  Import and Export screens call it on exit, and the UI calls it whenever an
+  MTP device appears with no transfer screen open (also a TP-7 left in MTP
+  mode by a reset).
+- **Looked stuck, was asking.** When the TP-7 already holds the export's
+  name, the screen asks to replace it (Export confirms, Back cancels).
+- **Speed.** A 3.5-minute 12-channel deck (366 MB) took 288 s to render and
+  55 s to send. The render now opens each source once (it reopened the files
+  per block and track); the build is -O2; an unedited deck is sent as its
+  source WAV without rendering (`passthroughSource`; the log says why a deck
+  needs a render, e.g. "track 1 is muted"). Timed at 2048-frame blocks: reading
+  88 s, writing 122 s, mixing 21 s. Packed 24-bit conversion loops (both ways)
+  were added to cut the read and write phases; not yet measured on the board.
+  Next: measure them, then render straight into the MTP upload instead of a
+  temporary file (saves writing and re-reading the whole render).
+- Imports now save the project (an unsaved deck was lost at power-off and
+  left its WAV on the card).
+
 ## P4 progress: TP-7 mode switch and MTP
 
 Opening Import or Export on the P4 now switches the TP-7 into MTP mode on its

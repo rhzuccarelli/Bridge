@@ -51,6 +51,12 @@ public:
     [[nodiscard]] core::Status connect();
     void disconnect() noexcept;
 
+    /// Ends Bridge's use of the device. A TP-7 leaves MTP mode only when a
+    /// session closes, so with none open (a failed connect, or a device left
+    /// in MTP mode by an earlier run) one is opened and closed. Blocking; I/O
+    /// thread only.
+    void release() noexcept;
+
     [[nodiscard]] std::optional<hal::MtpDeviceInfo> deviceInfo() const { return deviceInfo_; }
     [[nodiscard]] core::Result<std::vector<hal::MtpStorageInfo>> storages() const;
 

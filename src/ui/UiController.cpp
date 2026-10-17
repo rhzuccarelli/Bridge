@@ -1,5 +1,7 @@
 #include "aw/ui/UiController.hpp"
 
+#include "aw/core/Logger.hpp"
+
 #include "aw/ui/screens/ExportScreen.hpp"
 #include "aw/ui/screens/CopyChannelScreen.hpp"
 #include "aw/ui/screens/DeckScreen.hpp"
@@ -135,6 +137,15 @@ void UiController::onEvent(const events::Event& event) {
         return;
     }
 
+    // A device in MTP mode that no transfer screen asked for (left there by an
+    // earlier run, or arriving after its screen was closed) is sent back: a
+    // TP-7 stays in MTP mode, without audio, until a session has closed.
+    if (const auto* device = std::get_if<events::DeviceEvent>(routedEvent);
+        device && device->kind == events::DeviceKind::Mtp && device->attached && mtpManager_ &&
+        tasks_ && screen->id() != ScreenId::Import && screen->id() != ScreenId::Export) {
+        (void)tasks_->submit([manager = mtpManager_] { manager->release(); });
+    }
+
     const NavigationRequest request = screen->handleEvent(*routedEvent);
     if (request.intent == NavigationIntent::Ignored) {
         (void)handleGlobalShortcut(*routedEvent);
@@ -164,7 +175,10 @@ bool UiController::handleGlobalShortcut(const events::Event& event) {
             (void)projects_.undo();
             return true;
         case core::ButtonId::Save:
-            (void)projects_.saveProject();
+            if (auto status = projects_.saveProject(); status)
+                core::log::info("ui", "project saved");
+            else
+                core::log::warning("ui", "save failed: " + status.error().describe());
             return true;
         case core::ButtonId::Import:
             navigator_.push(ScreenId::Import);

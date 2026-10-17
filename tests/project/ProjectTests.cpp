@@ -7,11 +7,13 @@
 #include "aw/project/ImportService.hpp"
 #include "aw/project/ExportService.hpp"
 #include "aw/project/CopyChannelCommand.hpp"
+#include "aw/audio/WavReader.hpp"
 #include "aw/audio/WavWriter.hpp"
 #include "framework/Test.hpp"
 #include "support/MemoryStorage.hpp"
 
 #include <array>
+#include <cmath>
 #include <algorithm>
 #include <bit>
 
@@ -632,4 +634,87 @@ AW_TEST(ExportService, ExportsSixStereoTracksAsOneTwelveChannelWave) {
     AW_REQUIRE(exporter.run(plan, 13));
     AW_CHECK_EQ(mtp.deleted, hal::MtpObjectHandle{42});
     AW_CHECK(!mtp.uploaded.empty());
+}
+
+namespace {
+
+/// A 12-channel, one-frame source WAV whose channel c holds (c + 1) / 12, and
+/// a deck that plays pair 2i/2i+1 on track i: an unedited TP-7 import.
+void makeImportedDeck(awtest::MemoryStorage& storage, project::ProjectManager& manager) {
+    audio::WavWriter writer;
+    const core::AudioFormat format{48000, 12, core::SampleFormat::Int24};
+    AW_REQUIRE(writer.create(storage, manager.project().paths().audioFile("source.wav"), format));
+    audio::AudioBuffer frame{12, 1};
+    for (core::ChannelCount channel = 0; channel < 12; ++channel)
+        frame.channel(channel)[0] = static_cast<float>(channel + 1) / 12.0F;
+    AW_REQUIRE(writer.write(frame));
+    AW_REQUIRE(writer.close());
+    project::Timeline& timeline = const_cast<project::Timeline&>(manager.project().timeline());
+    for (std::size_t index = 0; index < project::kTrackCount; ++index) {
+        project::Clip clip;
+        clip.id = static_cast<core::ClipId>(index + 1);
+        clip.sourceFile = "source.wav";
+        clip.sourceRange = {0, 1};
+        clip.sourceChannel = static_cast<core::ChannelCount>(index * 2);
+        clip.sourceChannelCount = 2;
+        timeline.tracks[index].clips.push_back(clip);
+    }
+}
+
+std::vector<std::byte> readAll(hal::StorageInterface& storage, const core::Path& path) {
+    std::vector<std::byte> bytes;
+    auto file = storage.open(path, hal::OpenMode::Read);
+    if (!file) return bytes;
+    std::array<std::byte, 256> chunk{};
+    for (;;) {
+        auto got = file.value()->read(chunk);
+        if (!got || got.value() == 0) break;
+        bytes.insert(bytes.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(got.value()));
+    }
+    return bytes;
+}
+
+}  // namespace
+
+AW_TEST(ExportService, SendsAnUnchangedDeckAsItsSourceFile) {
+    // Rendering an unedited import would reproduce the file: send it as is.
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+    AW_REQUIRE(manager.createProject("Straight"));
+    makeImportedDeck(storage, manager);
+
+    TransferMtp mtp;
+    project::ExportService exporter{storage, mtp, manager, queue};
+    project::ExportPlan plan;
+    plan.targetStorage = 1;
+    AW_REQUIRE(exporter.run(plan, 21));
+    AW_CHECK(mtp.uploaded == readAll(storage, manager.project().paths().audioFile("source.wav")));
+    AW_CHECK(!storage.exists(manager.project().paths().editsDirectory() / "Straight.wav"));
+}
+
+AW_TEST(ExportService, RendersADeckWithAGainChange) {
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+    AW_REQUIRE(manager.createProject("Edited"));
+    makeImportedDeck(storage, manager);
+    const_cast<project::Timeline&>(manager.project().timeline()).tracks[0].gain = 0.5F;
+
+    TransferMtp mtp;
+    project::ExportService exporter{storage, mtp, manager, queue};
+    project::ExportPlan plan;
+    plan.targetStorage = 1;
+    AW_REQUIRE(exporter.run(plan, 22));
+
+    awtest::MemoryStorage verification;
+    verification.addFile("/export.wav", mtp.uploaded);
+    audio::WavReader reader;
+    AW_REQUIRE(reader.open(verification, "/export.wav"));
+    audio::AudioBuffer frame{12, 1};
+    AW_REQUIRE(reader.read(frame).hasValue());
+    const float lsb = 1.0F / 8388608.0F;
+    AW_CHECK(std::fabs(frame.channel(0)[0] - 0.5F / 12.0F) <= 2 * lsb);
+    AW_CHECK(std::fabs(frame.channel(1)[0] - 1.0F / 12.0F) <= 2 * lsb);
+    AW_CHECK(std::fabs(frame.channel(2)[0] - 3.0F / 12.0F) <= 2 * lsb);
 }

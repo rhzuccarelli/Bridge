@@ -33,3 +33,12 @@ CONFIG_USB_HOST_HUBS_SUPPORTED=y
 # TP-7 take names and project files need long file names on the SD card.
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
+
+# Allocations of 4 KiB or more go to PSRAM (the default is 16 KiB). Internal
+# RAM is kept for what needs it: DMA buffers (USB, SD), task stacks. With the
+# default, a loaded 12-channel deck left too little contiguous internal RAM for
+# the MTP transfers.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# -O2. The default -Og rendered a 3.5-minute, 12-channel export in 288 s.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
