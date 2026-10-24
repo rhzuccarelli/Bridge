@@ -1,8 +1,21 @@
 #include "aw/ui/Navigator.hpp"
 
 #include <cassert>
+#include <string>
+
+#include "aw/core/Logger.hpp"
 
 namespace aw::ui {
+namespace {
+
+/// One line per screen change: a log (or a test script driving the UI over
+/// the serial console) shows where the UI is without reading the display.
+void entered(Screen& screen) {
+    core::log::info("ui", "screen " + std::string{toString(screen.id())});
+    screen.onEnter();
+}
+
+}  // namespace
 
 void Navigator::registerScreen(std::unique_ptr<Screen> screen) {
     if (!screen) {
@@ -19,7 +32,7 @@ void Navigator::reset(ScreenId id) {
     stack_.clear();
     stack_.push_back(id);
     if (Screen* next = current()) {
-        next->onEnter();
+        entered(*next);
     }
 }
 
@@ -52,7 +65,7 @@ void Navigator::push(ScreenId id) {
     }
     stack_.push_back(id);
     if (Screen* next = current()) {
-        next->onEnter();
+        entered(*next);
     }
 }
 
@@ -65,7 +78,7 @@ void Navigator::pop() {
     }
     stack_.pop_back();
     if (Screen* next = current()) {
-        next->onEnter();
+        entered(*next);
     }
 }
 
@@ -79,7 +92,7 @@ void Navigator::replace(ScreenId id) {
     }
     stack_.back() = id;
     if (Screen* next = current()) {
-        next->onEnter();
+        entered(*next);
     }
 }
 

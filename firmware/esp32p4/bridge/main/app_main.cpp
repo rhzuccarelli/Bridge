@@ -11,12 +11,16 @@
 #include "aw/app/Application.hpp"
 #include "aw/core/Logger.hpp"
 #include "aw/platform/esp32p4/Esp32P4Platform.hpp"
+#include "aw/platform/esp32p4/EspConsole.hpp"
 #include "esp_heap_caps.h"
 
 extern "C" void app_main(void) {
     using namespace aw;
 
-    core::log::installSink(std::make_shared<core::ConsoleLogSink>());
+    // One lock for every console writer, so log lines and the display
+    // preview never interleave mid-line.
+    platform::esp32p4::lockIdfLogging();
+    core::log::installSink(std::make_shared<platform::esp32p4::EspConsoleLogSink>());
     core::log::setLevel(core::LogLevel::Info);
 
     auto platform = platform::esp32p4::createPlatform(platform::esp32p4::Esp32P4Config{});
@@ -33,7 +37,9 @@ extern "C" void app_main(void) {
     }
     core::log::info("main", "free heap: internal " +
                                 std::to_string(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024) +
-                                " KiB, PSRAM " +
+                                " KiB (largest DMA block " +
+                                std::to_string(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) / 1024) +
+                                " KiB), PSRAM " +
                                 std::to_string(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024) +
                                 " KiB");
 

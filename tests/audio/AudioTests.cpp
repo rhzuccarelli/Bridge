@@ -788,3 +788,47 @@ AW_TEST(AudioEngine, OpensOneTp7WaveOnceAndDemultiplexesAllSixPairs) {
     }
     engine.stop();
 }
+
+AW_TEST(SampleConverter, PackedInt24FastPathsMatchTheSingleSampleHelpers) {
+    // The bulk 24-bit loops must give exactly what int24ToFloat and
+    // floatToInt24 give: every 24-bit value one way, edges and a sweep back.
+    const core::AudioFormat format{48000, 2, core::SampleFormat::Int24};
+    constexpr std::size_t kFrames = 1u << 23;  // Two channels: all 2^24 values.
+    std::vector<std::byte> packed(kFrames * 6);
+    for (std::uint32_t value = 0; value < (1u << 24); ++value) {
+        packed[value * 3] = static_cast<std::byte>(value & 0xFF);
+        packed[value * 3 + 1] = static_cast<std::byte>((value >> 8) & 0xFF);
+        packed[value * 3 + 2] = static_cast<std::byte>((value >> 16) & 0xFF);
+    }
+    std::vector<float> left(kFrames), right(kFrames);
+    std::array<std::span<float>, 2> planes{std::span<float>{left}, std::span<float>{right}};
+    AW_REQUIRE(audio::convert::toFloat(packed, format, planes, static_cast<core::FrameCount>(kFrames)));
+    bool same = true;
+    for (std::uint32_t value = 0; value < (1u << 24) && same; ++value) {
+        const float expected = audio::convert::int24ToFloat(
+            packed[value * 3], packed[value * 3 + 1], packed[value * 3 + 2]);
+        same = (value % 2 == 0 ? left[value / 2] : right[value / 2]) == expected;
+    }
+    AW_CHECK(same);
+
+    std::vector<float> samples{-2.0F, -1.0F, -0.5F, -0.0F, 0.0F, 0.5F / 8388608.0F,
+                               1.5F / 8388608.0F, 0.999999F, 1.0F, 1.5F};
+    for (int i = -1000; i <= 1000; ++i) samples.push_back(static_cast<float>(i) / 997.0F);
+    if (samples.size() % 2 != 0) samples.push_back(0.25F);
+    const std::size_t frames = samples.size() / 2;
+    std::vector<float> l(frames), r(frames);
+    for (std::size_t f = 0; f < frames; ++f) {
+        l[f] = samples[f * 2];
+        r[f] = samples[f * 2 + 1];
+    }
+    std::array<std::span<const float>, 2> source{std::span<const float>{l}, std::span<const float>{r}};
+    std::vector<std::byte> out(frames * 6);
+    AW_REQUIRE(audio::convert::fromFloat(source, format, out, static_cast<core::FrameCount>(frames)));
+    bool packedSame = true;
+    for (std::size_t i = 0; i < samples.size() && packedSame; ++i) {
+        std::array<std::byte, 3> expected{};
+        audio::convert::floatToInt24(samples[i], std::span<std::byte, 3>{expected});
+        packedSame = std::equal(expected.begin(), expected.end(), out.begin() + static_cast<std::ptrdiff_t>(i * 3));
+    }
+    AW_CHECK(packedSame);
+}

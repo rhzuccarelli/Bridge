@@ -1,5 +1,7 @@
 #include "aw/platform/esp32p4/SerialPreviewDisplay.hpp"
 
+#include "aw/platform/esp32p4/EspConsole.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -114,25 +116,24 @@ void SerialPreviewDisplay::print(const std::vector<std::uint8_t>& pages, std::ui
         return index < pages.size() && ((pages[index] >> (y % 8)) & 1U) != 0;
     };
 
-    std::string text;
-    text.reserve(static_cast<std::size_t>(size.width + 4) * (size.height / 2 + 3) * 3);
-    text += "[display] frame " + std::to_string(frame) + "\n+";
-    text.append(size.width, '-');
-    text += "+\n";
+    // One console write per line: whole lines stay intact, and a log line
+    // from another task waits at most one line (about 11 ms at 115200 baud).
+    std::string border = "+";
+    border.append(size.width, '-');
+    border += "+\n";
+    consoleWrite("[display] frame " + std::to_string(frame) + "\n" + border);
+    std::string line;
     for (int y = 0; y < size.height; y += 2) {
-        text += '|';
+        line = "|";
         for (int x = 0; x < size.width; ++x) {
             const bool top = lit(x, y);
             const bool bottom = lit(x, y + 1);
-            text += top && bottom ? kFullBlock : top ? kUpperHalf : bottom ? kLowerHalf : " ";
+            line += top && bottom ? kFullBlock : top ? kUpperHalf : bottom ? kLowerHalf : " ";
         }
-        text += "|\n";
+        line += "|\n";
+        consoleWrite(line);
     }
-    text += '+';
-    text.append(size.width, '-');
-    text += "+\n";
-    std::fwrite(text.data(), 1, text.size(), stdout);
-    std::fflush(stdout);
+    consoleWrite(border);
 }
 
 }  // namespace aw::platform::esp32p4

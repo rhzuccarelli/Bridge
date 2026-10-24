@@ -1,0 +1,14 @@
+CONFIG_IDF_TARGET="esp32p4"
+
+# The TP-7 is a composite UAC/MIDI device; its configuration descriptor is far
+# larger than the 256-byte default, which makes enumeration fail outright.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=2048
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_FREERTOS_HZ=1000
+
+# Lab mode sends recorded takes to the Mac over the console (CH343 bridge).
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000

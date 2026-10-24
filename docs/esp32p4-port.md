@@ -101,8 +101,95 @@ cannot be in audio mode and MTP mode at once. Two options:
 2. **TP-7 over USB, as on the Pi.** Possible, but it is the single largest and
    riskiest work item in the port. Defer it until everything else works.
 
-The probe settled the class question: UAC1, high-bandwidth. The recommendation
-stays local I2S, and USB monitoring stays deferred.
+The probe settled the class question: UAC1, high-bandwidth.
+
+**Decision (2026-10-14): monitor audio plays through the TP-7, as on the Pi.**
+Bridge is used with the TP-7 as its audio interface, so local I2S is dropped
+from the plan, and P3 becomes the USB playback path. P3a, below, is the probe
+that de-risks it.
+
+## P3a progress: TP-7 playback probe
+
+`firmware/esp32p4/tp7-audio-probe` streams a 1 kHz tone to the TP-7's
+playback endpoint, on channels 1–2 only. ESP-IDF v5.5.1 needed four things
+from the caller, none of which needs a patched ESP-IDF:
+
+- **`SET_INTERFACE`.** `usb_host_interface_claim` never sends it. Without it
+  the TP-7 stays on alternate 0, drops the audio and never answers the
+  feedback endpoint, while OUT packets still report "completed".
+- **FIFO split.** The high-speed controller's FIFO is 896 lines. The default
+  split gives periodic OUT 512 bytes and rejects the 882-byte endpoint. A
+  custom split (`usb_host_config_t::fifo_settings_custom`: RX 320,
+  non-periodic TX 128, periodic TX 448 lines) fits a whole 1764-byte
+  microframe. The real backend needs the same split, so MTP's bulk IN shares
+  an RX FIFO of 1280 bytes.
+- **Multi-count and PID.** The driver never writes `HCCHAR.EC`, and starts
+  every channel at `DATA0`. The probe writes `EC` = 2 and PID `MDATA` into the
+  claimed playback channel before the first transfer (`EC` = 1, `DATA0` for
+  feedback), as Linux's dwc2 does. This holds because the HAL never touches
+  those fields after allocating the channel.
+- **Feedback format.** The TP-7 reports 3-byte Q10.14 frames per
+  millisecond, about `0x180000` (96.000). The probe sizes each packet from it.
+
+On the bench, playback runs at 1000 packets/s and 96 000 frames/s with no
+failed packets, and feedback arrives with no errors.
+
+Recorded tests (the probe's automatic lab: it arms the TP-7 over USB-MIDI,
+records, switches to MTP and fetches the take): coded packets and a
+frame-numbering ramp arrived intact, but sines were muted in 8–11 ms
+stretches, while squares were not. A Mac and a Raspberry Pi played the same
+sine cleanly. The cause was the wiring between the Pico's USB pins and the TP-7
+(a 200 mm JST lead into a USB-C socket, then a USB-C cable). Isochronous OUT
+has no handshake, so the TP-7 silently drops a corrupted packet. With a new
+cable (2026-10-17), four takes in a row recorded the −18 dBFS sine in 100% of
+1 ms blocks, at −21.0 dB RMS, with no glitches, and packet sizes following the
+feedback. Keep the USB data leads short and twisted.
+
+## P3 progress: monitor audio through the TP-7
+
+`Tp7AudioOutput` (`src/platform/esp32p4/usb/`) is the platform's audio
+output, wrapped in `FallbackAudioOutput` as on the Pi: while the TP-7 is
+unplugged or in MTP mode the engine runs on the silent wall clock, and the
+app's 2-second `refresh()` switches to the TP-7 when it returns. The engine
+stays at 48 kHz stereo; projects never change rate. The TP-7's playback
+endpoint takes only 96 kHz, six channels, so the backend converts with the
+Pi's `convertStereo48ToTp7Monitor96` (FL/FR carry the mix).
+
+- A render task (priority 17, core 1) pulls one 256-frame period from the
+  engine whenever the `FrameFifo` of packed 96 kHz frames holds under 1024
+  frames. USB completions (3 transfers of 4 packets in flight) refill each
+  packet with as many frames as the feedback asks for (`IsoPacketSizer`). The
+  render side follows the FIFO level, so the engine runs on the TP-7's clock,
+  which measures about 96.003 frames/ms against the P4's (30 ppm, ordinary
+  crystal tolerance). Latency is about 23 ms (FIFO target plus queued
+  transfers); a dry FIFO plays silence and reports an xrun.
+- `EspUsbStack` now installs the FIFO split playback needs (RX 320,
+  non-periodic TX 128, periodic TX 448 lines) and runs its host and client
+  tasks at priorities 19 and 18, above the engine's streaming thread.
+- `Tp7MidiPort` keeps the TP-7's MIDI interface claimed while it is attached,
+  with a read always pending. The TP-7 sends MIDI clock while its transport
+  runs; once that was queued unread, it ignored the SysEx that switches it to
+  MTP. The mode switch and bench tooling (`EspUsbBackends::sendMidi`) send
+  through it.
+- Feedback watchdog. When its host disappears mid-stream (the P4 reset or lost
+  power while the TP-7 stayed on), the TP-7 answers the feedback endpoint with
+  empty packets until it re-enumerates. Bus resets and alternate-setting
+  changes do not clear it (tried three times per boot, twice). Open-loop at
+  96.000 its buffer reaches a limit after about 13 s and it slips a sample
+  every 4 ms. So after 1.5 s without a rate, `refresh()` asks for a reset: the
+  MTP SysEx, then a PTP session opened and closed, which returns the TP-7 to
+  audio (at most twice in a row). On the bench that took about 4 s from boot
+  to a locked stream.
+
+Bench test: `firmware/esp32p4/tp7-output-test` plays a 660 Hz, −18 dBFS sine
+from a 48 kHz callback through the real backend and runs the record-and-fetch
+loop. Five takes in a row (one after a mid-stream reset, recovered by the
+watchdog) recorded the sine in 100% of 1 ms blocks at −21.0 dB RMS with no
+glitches. The bridge firmware on the bench went through the same recovery
+on its own: silent clock at boot, TP-7 attached, reset, monitoring active.
+
+Not yet verified: a real project's playback through the TP-7 by ear, and a
+long session for xruns (the remaining P3 acceptance).
 
 ## P1 result
 
@@ -141,6 +228,106 @@ The same 7-pin SSD1306 module as the Pi's is wired with SCK on GPIO6, SDA
 capture shows what the panel shows. Storage (FatFS on SD) is the remaining P2
 item.
 
+## P2 progress: SD card
+
+`FatFsStorage` mounts the card at `/sdcard`, through SDMMC on the P4 reference
+pins and powered from LDO VO4. It never formats the card. On the bench it
+mounted a 64 GB SanDisk card at 20 MHz. FatFS cannot rename onto an existing
+file, so `rename()` replaces a file in three steps: move the target to
+`.old`, move the new file in, delete `.old`. Any later access to that path
+completes or rolls back an interrupted replace, so a power cut during a save
+leaves either the new `metadata.json` or the previous one, never neither.
+Because newlib's file offsets are 32-bit, a single file can be seeked only
+within its first 2 GiB.
+
+`StdioFile`, the `FILE*`-backed `hal::FileHandle`, moved from `PosixStorage`
+to `aw/platform/StdioFile.hpp` so both backends share it.
+
+Console writes now use `fileno(stdout)` rather than fd 1. With FatFS linked
+in, `/dev/console` no longer had descriptor 1, and every log line silently
+went nowhere.
+
+## Storage and import speed
+
+Importing a take was unusably slow: about 0.45 MiB/s, so a 200 MiB take took
+7 minutes. `firmware/esp32p4/storage-bench` timed each stage. The card did
+5.3 MiB/s from an aligned internal-RAM buffer but 0.48 MiB/s through
+`FatFsStorage`. ESP-IDF's SD driver only uses multi-sector DMA when the
+buffer's address and size are cache-aligned; otherwise it writes one 512-byte
+sector per command through a bounce buffer. Import data arrives in PSRAM,
+shifted by the 12-byte MTP container header, so almost every sector took that
+path, and reads too.
+
+`FatFsStorage` now hands out `FatFsFile`s (POSIX descriptors instead of
+stdio) that move reads and writes of 4 KiB or more through one shared
+64 KiB buffer in internal DMA RAM, 128-byte aligned. The data is placed at
+the file offset modulo 128, so the whole sectors FatFS passes straight to the
+driver start aligned. The card also runs at 40 MHz (high speed) now, falling
+back to 20 MHz if a card refuses. `EspMtpDevice` sends the Still Image class
+Device Reset before each OpenSession, so a transfer cut off by a P4 reset no
+longer leaves the TP-7 answering nothing.
+
+| Bench (SanDisk 64 GB) | Before | After |
+| --- | --- | --- |
+| SD write, 64 KiB chunks | 0.48 MiB/s | 6.3–6.6 MiB/s |
+| SD read, 64 KiB chunks | 1.5 MiB/s | 11.1 MiB/s |
+| MTP read from the TP-7 | — | 26.2 MiB/s |
+| Import path, 198 MiB take | ≈7 min | 38–43 s (4.6–5.2 MiB/s), CRC-checked |
+
+The import is now bound by the card: 85 % of its time is SD writes. Writes
+under 4 KiB still go sector by sector (0.49 MiB/s at 1 KiB); nothing large
+writes that way. Overlapping the MTP reads with the SD writes would save at
+most the remaining 15 %.
+
+## Export: out of memory, TP-7 left in MTP mode (2026-10-17, in progress)
+
+Reproduced over the serial console (keys typed on the console now act as the
+panel: see `EspConsoleInput`; `firmware/esp32p4/bridge/tools/screen.py` sends
+keys and prints the screen, every screen change is logged as `ui screen …`).
+
+- **Out of memory.** With a 12-channel deck loaded, internal DMA RAM had
+  238 KiB free but no 64 KiB blocks left for the MTP session's two transfers.
+  `EspMtpDevice` now allocates them once at boot; the SD transfer buffer is
+  allocated at mount; allocations of 4 KiB or more go to PSRAM
+  (`CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096`).
+- **TP-7 stuck in MTP mode.** A failed session left nobody to close one.
+  `MtpManager::release()` opens and closes a session when none is open; the
+  Import and Export screens call it on exit, and the UI calls it whenever an
+  MTP device appears with no transfer screen open (also a TP-7 left in MTP
+  mode by a reset).
+- **Looked stuck, was asking.** When the TP-7 already holds the export's
+  name, the screen asks to replace it (Export confirms, Back cancels).
+- **Speed.** A 3.5-minute 12-channel deck (366 MB) took 288 s to render and
+  55 s to send. The render now opens each source once (it reopened the files
+  per block and track); the build is -O2; an unedited deck is sent as its
+  source WAV without rendering (`passthroughSource`; the log says why a deck
+  needs a render, e.g. "track 1 is muted"). Timed at 2048-frame blocks: reading
+  88 s, writing 122 s, mixing 21 s. Packed 24-bit conversion loops (both ways)
+  were added to cut the read and write phases; not yet measured on the board.
+  Next: measure them, then render straight into the MTP upload instead of a
+  temporary file (saves writing and re-reading the whole render).
+- Imports now save the project (an unsaved deck was lost at power-off and
+  left its WAV on the card).
+
+## P4 progress: TP-7 mode switch and MTP
+
+Opening Import or Export on the P4 now switches the TP-7 into MTP mode on its
+own, as on the Pi. The portable screens already called
+`DeviceModeInterface::requestMtpMode()`; the P4 had no backend for it.
+`createUsbBackends()` adds three backends that share one ESP-IDF USB host:
+`USBInterface` for hotplug, `MTPInterface` (the probe's PTP code plus the
+host-to-device data phase, for SendObjectInfo and SendObject), and the TP-7
+SysEx mode switch over USB-MIDI. Hotplug callbacks run on their own task,
+because `MtpManager` closes the session from inside the detach callback.
+
+On the bench, Import worked twice in a row. The TP-7 dropped out of audio mode,
+came back as `2367:0019 'TP-7 MTP Device'` at high speed, the session opened,
+and the screen listed `library`, `memo` and `recordings`. Leaving the screen
+closed the session, and the TP-7 returned to audio mode. Each return logs
+`E HUB: Root port reset failed`, then succeeds on the retry about 0.6 s later.
+Not yet exercised: copying a take (it needs the SD card), and Export (it needs
+a project, so it also waits on storage).
+
 ## If a TP-7 does not connect
 
 On the bench the TP-7 connected on the first attempt (see above). When it does
@@ -164,6 +351,6 @@ Each step ends with something to run on the bench, the same way the Pi phases di
 | **P0 — USB probe** (done, passed on the bench) | `firmware/esp32p4/tp7-probe` | TP-7 enumerates at high speed, switches to MTP, session opens, read throughput measured |
 | **P1 — Firmware skeleton** (done, boots on the bench) | ESP-IDF project in `firmware/esp32p4/bridge` building all portable layers as a component; `AW_PLATFORM=esp32p4`; null backends; `app_main` composition root | Boots; UI renders to the serial log |
 | P2 — Storage, display, input | `FatFsStorage`, SSD1306 over `esp_lcd`, encoder/buttons over GPIO | Create/open/save projects; navigate the UI on the OLED |
-| P3 — Audio out | `I2sAudioOutput` (48 kHz, 24-bit, 256-frame periods) | Six-lane playback with no xruns over a long session |
+| **P3a — TP-7 playback probe** (done; the mutes were the cable) | `firmware/esp32p4/tp7-audio-probe`: UAC1 high-bandwidth isochronous OUT with a custom FIFO split and multi-count | Clean 1 kHz tone from the TP-7; feedback endpoint reports a rate |
+| **P3 — Audio out through the TP-7** (backend done, sine verified by recording; long session open) | `Tp7AudioOutput`: engine's 48 kHz stereo converted with the Pi's `convertStereo48ToTp7Monitor96`, rate-matched to the feedback endpoint, sharing the USB host with MTP | Six-lane playback with no xruns over a long session |
 | P4 — MTP | `EspUsbHost`, `EspMtpDevice`, `Tp7UsbMidiModeSwitcher`, built from the probe | Phase 8 acceptance (`docs/phase8-tp7-test.md`) on the P4 |
-| Later | UAC1 high-bandwidth monitoring through the TP-7, if still wanted | — |

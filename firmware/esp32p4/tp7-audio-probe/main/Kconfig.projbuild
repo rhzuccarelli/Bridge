@@ -1,0 +1,44 @@
+menu "TP-7 audio probe"
+
+    config PROBE_VBUS_ENABLE_GPIO
+        int "GPIO that enables 5 V VBUS on the host socket (-1 = none)"
+        range -1 54
+        default -1
+
+    config PROBE_HIGH_BANDWIDTH
+        bool "Program two transactions per microframe on the playback channel"
+        default y
+        help
+            The TP-7's playback endpoint moves up to 2 x 882 bytes per microframe.
+            ESP-IDF v5.5.1 never programs the channel's multi-count, so the probe
+            writes it directly. Turn this off to see how the stream fails without it.
+
+    config PROBE_TONE_HZ
+        int "Test tone frequency (Hz)"
+        range 20 20000
+        default 1000
+
+    config PROBE_TONE_DBFS
+        int "Test tone level (dBFS, negative)"
+        range -60 0
+        default -18
+
+    config PROBE_SECONDS
+        int "Seconds to stream before stopping (0 = until detach)"
+        default 60
+
+    config PROBE_PACKETS_PER_URB
+        int "1 ms packets per playback transfer"
+        range 1 7
+        default 4
+        help
+            ESP-IDF's isochronous descriptor list holds 64 microframes with 3 kept
+            as margin. At one packet per millisecond (every 8 microframes), at most
+            7 packets fit in one transfer.
+
+    config PROBE_URBS_IN_FLIGHT
+        int "Playback transfers kept queued"
+        range 2 8
+        default 3
+
+endmenu

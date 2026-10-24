@@ -2,9 +2,12 @@
 
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "aw/audio/WavWriter.hpp"
+#include "aw/core/AudioFormat.hpp"
 #include "aw/core/Result.hpp"
 #include "aw/core/Types.hpp"
 #include "aw/events/EventQueue.hpp"
@@ -66,6 +69,15 @@ public:
     void requestCancel() noexcept;
 
 private:
+    /// Mixes the active deck into a WAV at `renderPath`; no events posted.
+    core::Status render(const ExportPlan& plan, const core::Path& renderPath,
+                        const core::AudioFormat& format,
+                        const std::optional<audio::AcidMetadata>& acid, std::uint32_t jobId);
+    /// Sends `sourcePath` (a render, or an unchanged source WAV) to the TP-7
+    /// and posts the finished event.
+    core::Status upload(const ExportPlan& plan, const core::Path& sourcePath, std::string targetName,
+                        std::uint64_t bytes, std::uint32_t jobId);
+
     hal::StorageInterface& storage_;
     hal::MTPInterface& mtp_;
     ProjectManager& projects_;

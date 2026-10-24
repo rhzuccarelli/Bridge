@@ -1,5 +1,7 @@
 #include "aw/project/ImportService.hpp"
 
+#include <string>
+
 #include "aw/audio/WavReader.hpp"
 #include "aw/core/Logger.hpp"
 #include "aw/project/Command.hpp"
@@ -108,7 +110,10 @@ core::Status ImportService::validate(const ImportPlan& plan) const {
     auto free = storage_.freeSpaceBytes(projects_.project().paths().audioDirectory());
     if (!free) return free.error();
     if (free.value() < plan.totalBytes())
-        return core::makeError(core::ErrorCode::OutOfSpace, "not enough local space for import");
+        return core::makeError(core::ErrorCode::OutOfSpace,
+                               "not enough local space for import: need " +
+                                   std::to_string(plan.totalBytes() >> 20) + " MiB, " +
+                                   std::to_string(free.value() >> 20) + " MiB free");
     return core::success();
 }
 
@@ -219,6 +224,13 @@ core::Status ImportService::run(const ImportPlan& plan, std::uint32_t jobId) {
     core::log::info(kLogModule, applied ? "import completed" : "import project update failed");
     if (!applied) {
         for (const core::Path& path : completedFiles) (void)storage_.remove(path);
+    } else if (auto saved = projects_.saveProject(); !saved) {
+        // The audio is on the card either way; an unsaved deck would be lost
+        // at power-off and leave its WAV behind, unreferenced.
+        core::log::warning(kLogModule, "imported, but saving the project failed: " +
+                                           saved.error().describe());
+    } else {
+        core::log::info(kLogModule, "project saved");
     }
     postFinished(eventQueue_, jobId, applied);
     return applied;

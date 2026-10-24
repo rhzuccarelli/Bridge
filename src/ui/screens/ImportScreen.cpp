@@ -30,8 +30,10 @@ void ImportScreen::onEnter() {
 }
 
 void ImportScreen::onExit() {
-    if (!transferInProgress_ && manager_.state() == mtp::ConnectionState::Connected) {
-        (void)tasks_.submit([this] { manager_.disconnect(); });
+    // Also after a failed connect: the TP-7 stays in MTP mode until a session
+    // has been opened and closed.
+    if (!transferInProgress_ && manager_.state() != mtp::ConnectionState::Disconnected) {
+        (void)tasks_.submit([this] { manager_.release(); });
     }
 }
 

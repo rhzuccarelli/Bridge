@@ -6,9 +6,15 @@
 #include <vector>
 
 #include "aw/core/Logger.hpp"
+#include "aw/platform/CompositeButtons.hpp"
+#include "aw/platform/CompositeEncoder.hpp"
+#include "aw/platform/FallbackAudioOutput.hpp"
 #include "aw/platform/NullAudioOutput.hpp"
+#include "aw/platform/esp32p4/EspConsoleInput.hpp"
 #include "aw/platform/esp32p4/EspGpioInput.hpp"
 #include "aw/platform/esp32p4/EspSpiOledBus.hpp"
+#include "aw/platform/esp32p4/EspUsb.hpp"
+#include "aw/platform/esp32p4/FatFsStorage.hpp"
 #include "aw/platform/esp32p4/SerialPreviewDisplay.hpp"
 #include "esp_timer.h"
 
@@ -30,7 +36,8 @@ public:
     }
 };
 
-/// An empty volume: the projects root exists and lists nothing; anything that
+/// Stands in when no SD card mounts. An empty volume: the projects root exists
+/// and lists nothing; anything that
 /// would read or write a file fails as "not connected". The UI shows an empty
 /// project list, which is what it shows for a blank card anyway.
 class NoCardStorage final : public hal::StorageInterface {
@@ -65,38 +72,49 @@ private:
     core::Path root_;
 };
 
-class NoUsb final : public hal::USBInterface {
-public:
-    core::Status start() override { return core::success(); }
-    void stop() noexcept override {}
-    void setHotplugListener(hal::UsbHotplugListener* /*listener*/) noexcept override {}
-    core::Result<std::vector<hal::UsbDeviceInfo>> enumerate() const override {
-        return std::vector<hal::UsbDeviceInfo>{};
-    }
-};
-
 }  // namespace
 
 core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     hal::Platform platform;
     platform.clock = std::make_unique<EspClock>();
-    platform.storage = std::make_unique<NoCardStorage>(config.projectsRoot);
+    if (auto card = FatFsStorage::mount(config.sdCard, config.projectsRoot); card) {
+        if (auto status = card.value()->createDirectories(config.projectsRoot); !status) {
+            core::log::warning(kModule, "cannot create projects folder: " + status.error().describe());
+        }
+        platform.storage = std::move(card).value();
+    } else {
+        core::log::warning(kModule, card.error().describe() + "; running without storage");
+        platform.storage = std::make_unique<NoCardStorage>(config.projectsRoot);
+    }
     platform.display = std::make_unique<SerialPreviewDisplay>(
         config.previewIntervalMillis,
         config.oled.sck >= 0 ? std::make_unique<EspSpiOledBus>(config.oled) : nullptr);
-    platform.buttons = std::make_unique<EspGpioButtons>(config.pins);
-    platform.encoder = std::make_unique<EspGpioEncoder>(config.pins);
-    platform.audioOutput = std::make_unique<NullAudioOutput>();
+    // The panel, plus keys typed on the serial console (development input).
+    EspConsoleInput console;
+    auto buttons = std::make_unique<CompositeButtons>();
+    buttons->addSource(std::make_unique<EspGpioButtons>(config.pins));
+    buttons->addSource(console.buttons());
+    platform.buttons = std::move(buttons);
+    auto encoder = std::make_unique<CompositeEncoder>();
+    encoder->addSource(std::make_unique<EspGpioEncoder>(config.pins));
+    encoder->addSource(console.encoder());
+    platform.encoder = std::move(encoder);
     platform.audioInput = nullptr;
-    platform.usb = std::make_unique<NoUsb>();
-    platform.mtp = nullptr;
-    platform.deviceMode = nullptr;
+    EspUsbBackends usb = createUsbBackends();
+    // Monitor audio through the TP-7 over USB. While it is unplugged or in MTP
+    // mode, the silent wall-clock output keeps the transport running, and
+    // refresh() switches back once the TP-7 returns to USB audio.
+    platform.audioOutput = std::make_unique<FallbackAudioOutput>(std::move(usb.audioOutput),
+                                                                 std::make_unique<NullAudioOutput>());
+    platform.usb = std::move(usb.usb);
+    platform.mtp = std::move(usb.mtp);
+    platform.deviceMode = std::move(usb.deviceMode);
 
     if (!platform.isComplete()) {
         return core::makeError(core::ErrorCode::Unknown, "esp32p4 platform incomplete");
     }
     core::log::info(kModule, "platform ready: SPI OLED (mirrored to serial), GPIO encoder "
-                             "and buttons, null storage, audio and USB");
+                             "and buttons, USB host with TP-7 MTP and monitor audio, SD card storage");
     return platform;
 }
 
