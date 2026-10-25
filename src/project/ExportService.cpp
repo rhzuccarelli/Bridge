@@ -23,9 +23,14 @@
 namespace aw::project {
 namespace {
 
-/// Frames per render block. 8192 was slower than 512 on the P4: the buffers
-/// (12 channels of float) no longer fit the cache.
-constexpr core::FrameCount kRenderBlockFrames = 2048;
+/// Frames per render block. Small enough that a block's buffers (12 channels
+/// of float, and their 24-bit bytes) stay in the P4's cache: converting in
+/// 2048-frame blocks ran three times slower than in 512.
+constexpr core::FrameCount kRenderBlockFrames = 512;
+
+/// Source files are read in chunks of this size, whatever the block size:
+/// one SD command each, through FatFsStorage's 64 KiB transfer buffer.
+constexpr std::size_t kSourceReadAheadBytes = 64 * 1024;
 
 void postFinished(events::EventQueue& queue, std::uint32_t jobId, const core::Status& status) {
     // The screen can show only the error code; the log keeps the reason.
@@ -198,6 +203,7 @@ private:
         source->file = file;
         if (auto status = source->reader.open(storage_, project_.paths().audioFile(file)); !status)
             return status.error();
+        source->reader.setReadAhead(kSourceReadAheadBytes);
         source->block = audio::AudioBuffer{source->reader.metadata().format.channels, kRenderBlockFrames};
         sources_.push_back(std::move(source));
         return sources_.back().get();
@@ -268,8 +274,8 @@ public:
     Clock::duration waitTime{};
 
 private:
-    /// Blocks rendered ahead. Each holds 2048 frames, 72 KiB at 12 channels.
-    static constexpr std::size_t kAhead = 4;
+    /// Blocks rendered ahead, 288 KiB at 12 channels.
+    static constexpr std::size_t kAhead = 16;
 
     void run() {
         std::vector<std::span<const float>> planes(format_.channels);

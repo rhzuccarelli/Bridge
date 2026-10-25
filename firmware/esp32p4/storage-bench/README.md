@@ -10,7 +10,10 @@ Times where an import's time goes, using the bridge firmware's own backends
    (switching the TP-7 to MTP if it is in audio mode);
 4. the import path: the same read written straight to an SD file, split into
    time waiting on MTP and time writing the card, then read back and
-   compared by CRC-32.
+   compared by CRC-32;
+5. the export's read path: the largest project WAV read in 2048-frame
+   blocks, raw and through `WavReader`, then the 24-bit conversion alone and
+   at 256, 512 and 2048 frames with its buffers in PSRAM or internal RAM.
 
 ```bash
 . ~/esp/esp-idf/export.sh

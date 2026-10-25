@@ -258,6 +258,12 @@ struct WavReader::Impl {
     WavMetadata metadata;
     core::FrameIndex position{0};
     std::vector<std::byte> scratch;
+    // Read-ahead: `ahead` holds frames [aheadStart, aheadStart + aheadFrames).
+    // Whenever none of it is left, the file is at `position`.
+    core::FrameCount aheadCapacity{0};
+    std::vector<std::byte> ahead;
+    core::FrameIndex aheadStart{0};
+    core::FrameCount aheadFrames{0};
 };
 
 WavReader::WavReader() = default;
@@ -300,6 +306,22 @@ const WavMetadata& WavReader::metadata() const noexcept {
     return impl_ ? impl_->metadata : kEmpty;
 }
 
+void WavReader::setReadAhead(std::size_t bytes) {
+    if (!isOpen()) {
+        return;
+    }
+    const std::size_t bytesPerFrame = impl_->metadata.format.bytesPerFrame();
+    impl_->aheadCapacity =
+        bytesPerFrame == 0 ? 0 : static_cast<core::FrameCount>(bytes / bytesPerFrame);
+    impl_->ahead.resize(static_cast<std::size_t>(impl_->aheadCapacity) * bytesPerFrame);
+    impl_->ahead.shrink_to_fit();
+    if (impl_->aheadFrames > 0) {
+        // Put the file back where the caller is.
+        impl_->aheadFrames = 0;
+        (void)seek(impl_->position);
+    }
+}
+
 core::Result<core::FrameCount> WavReader::read(AudioBuffer& destination) {
     if (!isOpen()) {
         return core::makeError(core::ErrorCode::InvalidState, "reader not open");
@@ -315,6 +337,9 @@ core::Result<core::FrameCount> WavReader::read(AudioBuffer& destination) {
     destination.setFrameCount(targetFrames);
     if (targetFrames == 0) {
         return core::FrameCount{0};
+    }
+    if (impl_->aheadCapacity > 0) {
+        return readAhead(destination, targetFrames);
     }
 
     const std::size_t bytesRequested =
@@ -357,10 +382,65 @@ core::Result<core::FrameCount> WavReader::read(AudioBuffer& destination) {
     return framesRead;
 }
 
+core::Result<core::FrameCount> WavReader::readAhead(AudioBuffer& destination,
+                                                    core::FrameCount targetFrames) {
+    const core::AudioFormat& format = impl_->metadata.format;
+    const std::size_t bytesPerFrame = format.bytesPerFrame();
+    std::vector<std::span<float>> channels(destination.channelCount());
+    core::FrameCount done = 0;
+    while (done < targetFrames) {
+        if (impl_->position < impl_->aheadStart ||
+            impl_->position >= impl_->aheadStart + impl_->aheadFrames) {
+            const core::FrameCount wanted = std::min(
+                impl_->aheadCapacity, impl_->metadata.frameCount - impl_->position);
+            const std::size_t bytesWanted = static_cast<std::size_t>(wanted) * bytesPerFrame;
+            std::size_t bytesRead = 0;
+            while (bytesRead < bytesWanted) {
+                auto read = impl_->file->read(
+                    std::span<std::byte>{impl_->ahead}.subspan(bytesRead, bytesWanted - bytesRead));
+                if (!read) {
+                    impl_->aheadFrames = 0;
+                    return read.error();
+                }
+                if (read.value() == 0) {
+                    break;
+                }
+                bytesRead += read.value();
+            }
+            impl_->aheadStart = impl_->position;
+            impl_->aheadFrames = static_cast<core::FrameCount>(bytesRead / bytesPerFrame);
+            if (bytesRead % bytesPerFrame != 0) {
+                impl_->aheadFrames = 0;
+                return core::makeError(core::ErrorCode::Corrupt, "partial frame at end of WAV read");
+            }
+            if (impl_->aheadFrames == 0) {
+                break;
+            }
+        }
+        const core::FrameCount offset = impl_->position - impl_->aheadStart;
+        const core::FrameCount frames = std::min(targetFrames - done, impl_->aheadFrames - offset);
+        for (core::ChannelCount channel = 0; channel < destination.channelCount(); ++channel) {
+            channels[channel] = destination.channel(channel).subspan(static_cast<std::size_t>(done),
+                                                                     static_cast<std::size_t>(frames));
+        }
+        const auto bytes = std::span<const std::byte>{impl_->ahead}.subspan(
+            static_cast<std::size_t>(offset) * bytesPerFrame,
+            static_cast<std::size_t>(frames) * bytesPerFrame);
+        if (auto status = convert::toFloat(bytes, format, channels, frames); !status) {
+            return status.error();
+        }
+        impl_->position += frames;
+        done += frames;
+    }
+    destination.setFrameCount(done);
+    return done;
+}
+
 core::Status WavReader::seek(core::FrameIndex frame) {
     if (!isOpen()) {
         return core::makeError(core::ErrorCode::InvalidState, "reader not open");
     }
+    impl_->aheadFrames = 0;
 
     const core::FrameIndex clamped = std::clamp<core::FrameIndex>(frame, 0, impl_->metadata.frameCount);
     const std::uint64_t byteOffset =

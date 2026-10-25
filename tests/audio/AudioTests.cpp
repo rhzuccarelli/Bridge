@@ -832,3 +832,49 @@ AW_TEST(SampleConverter, PackedInt24FastPathsMatchTheSingleSampleHelpers) {
     }
     AW_CHECK(packedSame);
 }
+
+AW_TEST(WavReader, ReadAheadReturnsTheSameFramesAcrossChunksAndSeeks) {
+    // 3 channels, 1000 frames; a 40-frame read-ahead with 7-frame reads
+    // crosses chunk edges, and a seek drops what was read ahead.
+    awtest::MemoryStorage storage;
+    const core::AudioFormat format{48000, 3, core::SampleFormat::Int24};
+    audio::WavWriter writer;
+    AW_REQUIRE(writer.create(storage, "/ramp.wav", format));
+    audio::AudioBuffer all{3, 1000};
+    for (core::ChannelCount channel = 0; channel < 3; ++channel)
+        for (std::size_t frame = 0; frame < 1000; ++frame)
+            all.channel(channel)[frame] =
+                static_cast<float>(channel) * 0.25F + static_cast<float>(frame) / 4096.0F;
+    AW_REQUIRE(writer.write(all));
+    AW_REQUIRE(writer.close());
+
+    audio::WavReader plain;
+    audio::WavReader ahead;
+    AW_REQUIRE(plain.open(storage, "/ramp.wav"));
+    AW_REQUIRE(ahead.open(storage, "/ramp.wav"));
+    ahead.setReadAhead(40 * format.bytesPerFrame() + 5);  // Not a whole number of frames.
+
+    audio::AudioBuffer expected{3, 7};
+    audio::AudioBuffer actual{3, 7};
+    const auto compare = [&] {
+        const auto want = plain.read(expected);
+        const auto got = ahead.read(actual);
+        AW_REQUIRE(want.hasValue() && got.hasValue());
+        AW_CHECK_EQ(got.value(), want.value());
+        AW_CHECK_EQ(ahead.position(), plain.position());
+        for (core::ChannelCount channel = 0; channel < 3; ++channel)
+            for (core::FrameCount frame = 0; frame < want.value(); ++frame)
+                AW_CHECK_EQ(actual.channel(channel)[static_cast<std::size_t>(frame)],
+                            expected.channel(channel)[static_cast<std::size_t>(frame)]);
+        return want.value();
+    };
+    for (int i = 0; i < 20; ++i) compare();
+    AW_REQUIRE(plain.seek(13));
+    AW_REQUIRE(ahead.seek(13));
+    for (int i = 0; i < 10; ++i) compare();
+    AW_REQUIRE(plain.seek(990));
+    AW_REQUIRE(ahead.seek(990));
+    AW_CHECK_EQ(compare(), core::FrameCount{7});
+    AW_CHECK_EQ(compare(), core::FrameCount{3});
+    AW_CHECK_EQ(compare(), core::FrameCount{0});
+}

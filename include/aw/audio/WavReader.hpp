@@ -50,6 +50,12 @@ public:
     /// Blocking: called from the streaming thread, never from the audio callback.
     [[nodiscard]] core::Result<core::FrameCount> read(AudioBuffer& destination);
 
+    /// Reads the file in chunks of about `bytes` (whole frames) and serves
+    /// `read()` from them, so small reads cost one large storage read. 0, the
+    /// default, reads exactly what each `read()` asks for. For sequential
+    /// reading: a `seek()` drops what was read ahead.
+    void setReadAhead(std::size_t bytes);
+
     /// Positions the next read.  Clamped to [0, frameCount].
     [[nodiscard]] core::Status seek(core::FrameIndex frame);
 
@@ -60,6 +66,8 @@ public:
                                                                 const core::Path& path);
 
 private:
+    core::Result<core::FrameCount> readAhead(AudioBuffer& destination, core::FrameCount targetFrames);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;  ///< pimpl: keeps chunk parsing state out of this header.
 };
