@@ -314,9 +314,11 @@ keys and prints the screen, every screen change is logged as `ui screen …`).
   once on an SD read timeout while reading its render back. MTP has to
   receive the size SendObjectInfo announced, so after a failure or a cancel
   the rest is zeros and the object is then deleted from the TP-7.
-  Next: read and mix on one core while the other sends (the 33 s of USB
-  would overlap), and find why reading runs at 4.7 MiB/s against the card's
-  11.
+- **Render ahead (2026-10-25).** A thread renders up to four blocks ahead
+  of the upload, so reading and mixing overlap the USB transfers: 120 s.
+  The render is now the whole cost (reading 72 s, mixing and converting
+  47 s); the upload spends 81 s of it waiting. Next: why reading runs at
+  4.8 MiB/s against the card's 11, and the mix.
 - Imports now save the project (an unsaved deck was lost at power-off and
   left its WAV on the card).
 
