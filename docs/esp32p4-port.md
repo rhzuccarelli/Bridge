@@ -314,9 +314,19 @@ keys and prints the screen, every screen change is logged as `ui screen …`).
   once on an SD read timeout while reading its render back. MTP has to
   receive the size SendObjectInfo announced, so after a failure or a cancel
   the rest is zeros and the object is then deleted from the TP-7.
-  Next: read and mix on one core while the other sends (the 33 s of USB
-  would overlap), and find why reading runs at 4.7 MiB/s against the card's
-  11.
+- **Render ahead (2026-10-25).** A thread renders up to four blocks ahead
+  of the upload, so reading and mixing overlap the USB transfers: 120 s.
+  The render is now the whole cost (reading 72 s, mixing and converting
+  47 s); the upload spends 81 s of it waiting.
+- **Cache-sized blocks (2026-10-25): 88 s.** `storage-bench` showed the card
+  reading the deck's WAV at 11.3 MiB/s in 72 KiB blocks, but the 24-bit
+  conversion running three times slower in 2048-frame blocks than in 512
+  (to float 18 vs 55 MiB/s, from float 14 vs 29), the same in PSRAM and in
+  internal RAM: 2048 frames of 12 channels overflow the cache. The render
+  now mixes 512-frame blocks, and `WavReader::setReadAhead` keeps each
+  source read at one 64 KiB SD command. Reading 59 s, mixing and converting
+  28 s; the upload still waits 53 s for the render. Next: read the sources
+  on a thread of their own, so the SD transfers overlap the mixing.
 - Imports now save the project (an unsaved deck was lost at power-off and
   left its WAV on the card).
 

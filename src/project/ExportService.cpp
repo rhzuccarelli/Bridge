@@ -9,19 +9,28 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <cmath>
 #include <optional>
 #include <span>
+#include <thread>
 
 namespace aw::project {
 namespace {
 
-/// Frames per render block. 8192 was slower than 512 on the P4: the buffers
-/// (12 channels of float) no longer fit the cache.
-constexpr core::FrameCount kRenderBlockFrames = 2048;
+/// Frames per render block. Small enough that a block's buffers (12 channels
+/// of float, and their 24-bit bytes) stay in the P4's cache: converting in
+/// 2048-frame blocks ran three times slower than in 512.
+constexpr core::FrameCount kRenderBlockFrames = 512;
+
+/// Source files are read in chunks of this size, whatever the block size:
+/// one SD command each, through FatFsStorage's 64 KiB transfer buffer.
+constexpr std::size_t kSourceReadAheadBytes = 64 * 1024;
 
 void postFinished(events::EventQueue& queue, std::uint32_t jobId, const core::Status& status) {
     // The screen can show only the error code; the log keeps the reason.
@@ -194,6 +203,7 @@ private:
         source->file = file;
         if (auto status = source->reader.open(storage_, project_.paths().audioFile(file)); !status)
             return status.error();
+        source->reader.setReadAhead(kSourceReadAheadBytes);
         source->block = audio::AudioBuffer{source->reader.metadata().format.channels, kRenderBlockFrames};
         sources_.push_back(std::move(source));
         return sources_.back().get();
@@ -203,6 +213,125 @@ private:
     const Project& project_;
     audio::AudioBuffer output_;
     std::vector<std::unique_ptr<Source>> sources_;
+};
+
+
+/// Renders the deck on a thread of its own, a few blocks ahead of the upload,
+/// so reading and mixing overlap the USB transfers. Each block is converted
+/// to the file's 24-bit PCM before it is queued.
+class RenderAhead {
+public:
+    RenderAhead(hal::StorageInterface& storage, const Project& project,
+                const core::AudioFormat& format, core::FrameCount totalFrames,
+                std::vector<std::byte> header)
+        : renderer_{storage, project, format.channels}, format_{format},
+          totalFrames_{totalFrames}, current_{std::move(header)} {
+        thread_ = std::thread{[this] { run(); }};
+    }
+
+    ~RenderAhead() { stop(); }
+
+    RenderAhead(const RenderAhead&) = delete;
+    RenderAhead& operator=(const RenderAhead&) = delete;
+
+    /// The upload's data source: the header, then the rendered blocks in order.
+    core::Result<std::size_t> read(std::span<std::byte> buffer) {
+        if (offset_ == current_.size()) {
+            std::unique_lock lock{mutex_};
+            if (!current_.empty()) spare_.push_back(std::move(current_));
+            current_.clear();
+            changed_.notify_all();
+            const auto started = Clock::now();
+            changed_.wait(lock, [this] { return !ready_.empty() || finished_; });
+            waitTime += Clock::now() - started;
+            if (ready_.empty()) {
+                if (!failure_) return failure_.error();
+                return std::size_t{0};
+            }
+            current_ = std::move(ready_.front());
+            ready_.pop_front();
+            offset_ = 0;
+            changed_.notify_all();
+        }
+        const std::size_t n = std::min(buffer.size(), current_.size() - offset_);
+        std::copy_n(current_.begin() + static_cast<std::ptrdiff_t>(offset_), n, buffer.begin());
+        offset_ += n;
+        return n;
+    }
+
+    /// Ends the render thread, finished or not. The timings are valid after it.
+    void stop() {
+        {
+            std::lock_guard lock{mutex_};
+            stopping_ = true;
+        }
+        changed_.notify_all();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    [[nodiscard]] Clock::duration readTime() const noexcept { return renderer_.readTime; }
+    [[nodiscard]] Clock::duration renderTime() const noexcept { return renderTime_; }
+    Clock::duration waitTime{};
+
+private:
+    /// Blocks rendered ahead, 288 KiB at 12 channels.
+    static constexpr std::size_t kAhead = 16;
+
+    void run() {
+        std::vector<std::span<const float>> planes(format_.channels);
+        for (core::FrameIndex next = 0; next < totalFrames_;) {
+            std::vector<std::byte> block;
+            {
+                std::unique_lock lock{mutex_};
+                changed_.wait(lock, [this] { return stopping_ || ready_.size() < kAhead; });
+                if (stopping_) break;
+                if (!spare_.empty()) {
+                    block = std::move(spare_.back());
+                    spare_.pop_back();
+                }
+            }
+            const auto started = Clock::now();
+            const core::FrameCount frames = std::min(kRenderBlockFrames, totalFrames_ - next);
+            core::Status status = renderer_.render(next, frames);
+            if (status) {
+                for (core::ChannelCount channel = 0; channel < format_.channels; ++channel)
+                    planes[channel] = renderer_.output().channel(channel);
+                block.resize(static_cast<std::size_t>(frames) * format_.bytesPerFrame());
+                status = audio::convert::fromFloat(planes, format_, block, frames);
+            }
+            renderTime_ += Clock::now() - started;
+            std::lock_guard lock{mutex_};
+            if (!status) {
+                failure_ = status;
+                break;
+            }
+            ready_.push_back(std::move(block));
+            next += frames;
+            changed_.notify_all();
+        }
+        std::lock_guard lock{mutex_};
+        finished_ = true;
+        changed_.notify_all();
+    }
+
+    DeckRenderer renderer_;
+    const core::AudioFormat format_;
+    const core::FrameCount totalFrames_;
+    Clock::duration renderTime_{};
+
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    std::deque<std::vector<std::byte>> ready_;
+    std::vector<std::vector<std::byte>> spare_;
+    core::Status failure_ = core::success();
+    bool finished_{false};
+    bool stopping_{false};
+
+    // Consumer side, touched only by `read()`.
+    std::vector<std::byte> current_;
+    std::size_t offset_{0};
+
+    std::thread thread_;
 };
 
 }  // namespace
@@ -304,42 +433,21 @@ core::Status ExportService::run(const ExportPlan& plan, std::uint32_t jobId) {
     }
 
     // The render goes straight into the upload: the header, then each block
-    // converted to 24-bit as MTP asks for more. Nothing is written to the card.
-    DeckRenderer renderer{storage_, project, channels};
-    std::vector<std::byte> pending = header;
-    std::size_t pendingOffset = 0;
-    core::FrameIndex nextFrame = 0;
-    Clock::duration renderTime{};
-    std::vector<std::span<const float>> planes(channels);
+    // converted to 24-bit, rendered on a thread of its own while the previous
+    // blocks are sent. Nothing is written to the card.
     core::log::info("export", "rendering " + std::to_string(totalFrames) + " frames, " +
                                   std::to_string(channels) + " channels into the upload");
-    const auto produce = [&](std::span<std::byte> buffer) -> core::Result<std::size_t> {
-        if (pendingOffset == pending.size()) {
-            if (nextFrame >= totalFrames) return std::size_t{0};
-            const auto started = Clock::now();
-            const core::FrameCount frames = std::min(kRenderBlockFrames, totalFrames - nextFrame);
-            if (auto status = renderer.render(nextFrame, frames); !status) return status.error();
-            for (core::ChannelCount channel = 0; channel < channels; ++channel)
-                planes[channel] = renderer.output().channel(channel);
-            pending.resize(static_cast<std::size_t>(frames) * format.bytesPerFrame());
-            if (auto status = audio::convert::fromFloat(planes, format, pending, frames); !status)
-                return status.error();
-            pendingOffset = 0;
-            nextFrame += frames;
-            renderTime += Clock::now() - started;
-        }
-        const std::size_t n = std::min(buffer.size(), pending.size() - pendingOffset);
-        std::copy_n(pending.begin() + static_cast<std::ptrdiff_t>(pendingOffset), n, buffer.begin());
-        pendingOffset += n;
-        return n;
-    };
     const auto started = Clock::now();
-    core::Status status = upload(plan, targetName, uploadBytes, jobId, produce);
+    RenderAhead render{storage_, project, format, totalFrames, header};
+    core::Status status = upload(plan, targetName, uploadBytes, jobId,
+                                 [&](std::span<std::byte> buffer) { return render.read(buffer); });
+    render.stop();
     const auto total = Clock::now() - started;
     core::log::info("export", "export took " + milliseconds(total) + " ms: reading sources " +
-                                  milliseconds(renderer.readTime) + " ms, mixing and converting " +
-                                  milliseconds(renderTime - renderer.readTime) + " ms, USB " +
-                                  milliseconds(total - renderTime) + " ms");
+                                  milliseconds(render.readTime()) + " ms, mixing and converting " +
+                                  milliseconds(render.renderTime() - render.readTime()) +
+                                  " ms, upload waited " + milliseconds(render.waitTime) +
+                                  " ms for the render");
     return status;
 }
 

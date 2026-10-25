@@ -6,8 +6,12 @@
 /// 2. SD reads (what playback streams).
 /// 3. MTP reads from the TP-7 into memory (EspMtpDevice::readObject).
 /// 4. The import path itself: MTP read straight into an SD file.
+/// 5. The export's read path: the largest project WAV read in render-sized
+///    blocks, raw and through WavReader, and the 24-bit conversion alone.
 ///
+#include <dirent.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cinttypes>
@@ -17,6 +21,9 @@
 #include <string>
 #include <vector>
 
+#include "aw/audio/AudioBuffer.hpp"
+#include "aw/audio/SampleConverter.hpp"
+#include "aw/audio/WavReader.hpp"
 #include "aw/core/Logger.hpp"
 #include "aw/platform/esp32p4/EspConsole.hpp"
 #include "aw/platform/esp32p4/EspUsb.hpp"
@@ -97,6 +104,120 @@ std::optional<hal::UsbDeviceInfo> findTp7(hal::USBInterface& usb, bool mtp) {
     return std::nullopt;
 }
 
+
+/// The 24-bit conversion with its buffers in PSRAM or internal RAM, at
+/// several block sizes: where its time goes.
+void conversionPlacement(const core::AudioFormat& format) {
+    constexpr std::uint64_t kBytes = 32u << 20;
+    for (const bool internal : {false, true}) {
+        for (const std::size_t frames : {std::size_t{256}, std::size_t{512}, std::size_t{2048}}) {
+            const std::uint32_t caps = internal ? (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) : MALLOC_CAP_SPIRAM;
+            const std::size_t rawBytes = frames * format.bytesPerFrame();
+            auto* raw = static_cast<std::byte*>(heap_caps_malloc(rawBytes, caps));
+            auto* floats = static_cast<float*>(heap_caps_malloc(frames * format.channels * sizeof(float), caps));
+            if (raw == nullptr || floats == nullptr) {
+                line("conversion: no memory");
+            } else {
+                std::fill_n(raw, rawBytes, std::byte{0x11});
+                std::vector<std::span<float>> planes;
+                for (core::ChannelCount channel = 0; channel < format.channels; ++channel)
+                    planes.emplace_back(floats + channel * frames, frames);
+                std::vector<std::span<const float>> constPlanes(planes.begin(), planes.end());
+                std::int64_t start = esp_timer_get_time();
+                for (std::uint64_t total = 0; total < kBytes; total += rawBytes)
+                    (void)audio::convert::toFloat({raw, rawBytes}, format, planes,
+                                                  static_cast<core::FrameCount>(frames));
+                const std::int64_t toMicros = esp_timer_get_time() - start;
+                start = esp_timer_get_time();
+                for (std::uint64_t total = 0; total < kBytes; total += rawBytes)
+                    (void)audio::convert::fromFloat(constPlanes, format, {raw, rawBytes},
+                                                    static_cast<core::FrameCount>(frames));
+                line(std::string{"conversion, "} + (internal ? "internal" : "PSRAM") + ", " +
+                     std::to_string(frames) + " frames: to float " + rate(kBytes, toMicros) +
+                     "; from float " + rate(kBytes, esp_timer_get_time() - start));
+            }
+            heap_caps_free(raw);
+            heap_caps_free(floats);
+        }
+    }
+}
+
+/// The largest WAV under /sdcard/projects/*/audio.
+std::optional<std::string> largestProjectWav() {
+    std::optional<std::string> best;
+    std::uint64_t bestSize = 0;
+    DIR* projects = ::opendir("/sdcard/projects");
+    if (projects == nullptr) return best;
+    while (dirent* project = ::readdir(projects)) {
+        const std::string audio = std::string{"/sdcard/projects/"} + project->d_name + "/audio";
+        DIR* files = ::opendir(audio.c_str());
+        if (files == nullptr) continue;
+        while (dirent* file = ::readdir(files)) {
+            const std::string path = audio + "/" + file->d_name;
+            struct stat info {};
+            if (::stat(path.c_str(), &info) == 0 && static_cast<std::uint64_t>(info.st_size) > bestSize &&
+                path.ends_with(".wav")) {
+                bestSize = static_cast<std::uint64_t>(info.st_size);
+                best = path;
+            }
+        }
+        ::closedir(files);
+    }
+    ::closedir(projects);
+    return best;
+}
+
+/// Where an export's source reading goes: the card, WavReader, or the
+/// 24-bit conversion. Reads the first 96 MiB in 2048-frame blocks.
+void exportReadPath(hal::StorageInterface& sd) {
+    constexpr std::uint64_t kLimit = 96u << 20;
+    constexpr core::FrameCount kBlock = 2048;
+    const auto path = largestProjectWav();
+    if (!path) return line("export read: no project WAV");
+    audio::WavReader reader;
+    if (auto status = reader.open(sd, *path); !status) return line("export read: " + status.error().describe());
+    const core::AudioFormat format = reader.metadata().format;
+    const std::size_t blockBytes = static_cast<std::size_t>(kBlock) * format.bytesPerFrame();
+    line("export read: " + *path + ", " + std::to_string(format.channels) + " channels");
+
+    std::vector<std::byte> raw(blockBytes);
+    std::int64_t start = esp_timer_get_time();
+    std::uint64_t total = 0;
+    if (auto file = sd.open(*path, hal::OpenMode::Read)) {
+        while (total < kLimit) {
+            auto got = file.value()->read(raw);
+            if (!got || got.value() == 0) break;
+            total += got.value();
+        }
+    }
+    line("export read, raw " + std::to_string(blockBytes >> 10) + " KiB blocks: " +
+         rate(total, esp_timer_get_time() - start));
+
+    audio::AudioBuffer block{format.channels, kBlock};
+    start = esp_timer_get_time();
+    total = 0;
+    while (total < kLimit) {
+        auto got = reader.read(block);
+        if (!got || got.value() == 0) break;
+        total += static_cast<std::uint64_t>(got.value()) * format.bytesPerFrame();
+    }
+    line("export read, WavReader 2048 frames: " + rate(total, esp_timer_get_time() - start));
+
+    std::vector<std::span<float>> planes;
+    for (core::ChannelCount channel = 0; channel < format.channels; ++channel)
+        planes.push_back(block.channel(channel));
+    block.setFrameCount(kBlock);
+    start = esp_timer_get_time();
+    total = 0;
+    while (total < kLimit) {
+        (void)audio::convert::toFloat(raw, format, planes, kBlock);
+        total += blockBytes;
+    }
+    line("export read, 24-bit to float only: " + rate(total, esp_timer_get_time() - start));
+    conversionPlacement(format);
+}
+
+
 }  // namespace
 
 extern "C" void app_main(void) {
@@ -115,6 +236,7 @@ extern "C" void app_main(void) {
         halWrite(sd, testFile, chunk);
     for (const std::size_t chunk : {std::size_t{64} << 10, std::size_t{512} << 10}) halRead(sd, testFile, chunk);
     (void)sd.remove(testFile);
+    exportReadPath(sd);
 
     auto usb = platform::esp32p4::createUsbBackends();
     (void)usb.usb->start();
