@@ -279,7 +279,7 @@ under 4 KiB still go sector by sector (0.49 MiB/s at 1 KiB); nothing large
 writes that way. Overlapping the MTP reads with the SD writes would save at
 most the remaining 15 %.
 
-## Export: out of memory, TP-7 left in MTP mode (2026-10-17, in progress)
+## Export: out of memory, TP-7 left in MTP mode, speed (2026-10-17 to 25)
 
 Reproduced over the serial console (keys typed on the console now act as the
 panel: see `EspConsoleInput`; `firmware/esp32p4/bridge/tools/screen.py` sends
@@ -303,9 +303,20 @@ keys and prints the screen, every screen change is logged as `ui screen …`).
   source WAV without rendering (`passthroughSource`; the log says why a deck
   needs a render, e.g. "track 1 is muted"). Timed at 2048-frame blocks: reading
   88 s, writing 122 s, mixing 21 s. Packed 24-bit conversion loops (both ways)
-  were added to cut the read and write phases; not yet measured on the board.
-  Next: measure them, then render straight into the MTP upload instead of a
-  temporary file (saves writing and re-reading the whole render).
+  were added to cut the read and write phases; on the board reading still
+  took 87 s (2026-10-25).
+- **Render streamed into the upload (2026-10-25).** A 24-bit WAV's size
+  follows from the deck's length, so `ExportService` sends the header
+  (`WavWriter::header`) and then mixes block by block as MTP asks for data.
+  There is no temporary file, and nothing is written to the card. The same
+  deck now exports in 154 s instead of about 286 s: reading sources 75 s,
+  mixing and converting 47 s, USB 33 s. The two-step version also failed
+  once on an SD read timeout while reading its render back. MTP has to
+  receive the size SendObjectInfo announced, so after a failure or a cancel
+  the rest is zeros and the object is then deleted from the TP-7.
+  Next: read and mix on one core while the other sends (the 33 s of USB
+  would overlap), and find why reading runs at 4.7 MiB/s against the card's
+  11.
 - Imports now save the project (an unsaved deck was lost at power-off and
   left its WAV on the card).
 
