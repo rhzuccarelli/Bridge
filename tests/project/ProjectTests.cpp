@@ -718,3 +718,93 @@ AW_TEST(ExportService, RendersADeckWithAGainChange) {
     AW_CHECK(std::fabs(frame.channel(1)[0] - 1.0F / 12.0F) <= 2 * lsb);
     AW_CHECK(std::fabs(frame.channel(2)[0] - 3.0F / 12.0F) <= 2 * lsb);
 }
+
+namespace {
+
+/// A 12-channel source of `frames` frames whose channel c at frame f holds
+/// (c + 1) / 16 + f / 2^20, played pair by pair on the six tracks.
+void makeLongDeck(awtest::MemoryStorage& storage, project::ProjectManager& manager,
+                  core::FrameCount frames) {
+    audio::WavWriter writer;
+    const core::AudioFormat format{48000, 12, core::SampleFormat::Int24};
+    AW_REQUIRE(writer.create(storage, manager.project().paths().audioFile("long.wav"), format));
+    audio::AudioBuffer block{12, frames};
+    for (core::ChannelCount channel = 0; channel < 12; ++channel)
+        for (core::FrameCount frame = 0; frame < frames; ++frame)
+            block.channel(channel)[static_cast<std::size_t>(frame)] =
+                static_cast<float>(channel + 1) / 16.0F + static_cast<float>(frame) / 1048576.0F;
+    AW_REQUIRE(writer.write(block));
+    AW_REQUIRE(writer.close());
+    project::Timeline& timeline = const_cast<project::Timeline&>(manager.project().timeline());
+    for (std::size_t index = 0; index < project::kTrackCount; ++index) {
+        project::Clip clip;
+        clip.id = static_cast<core::ClipId>(index + 1);
+        clip.sourceFile = "long.wav";
+        clip.sourceRange = {0, frames};
+        clip.sourceChannel = static_cast<core::ChannelCount>(index * 2);
+        clip.sourceChannelCount = 2;
+        timeline.tracks[index].clips.push_back(clip);
+    }
+}
+
+}  // namespace
+
+AW_TEST(ExportService, StreamsAMultiBlockRenderIntoTheUpload) {
+    // Several render blocks, sent without a local render file.
+    constexpr core::FrameCount kFrames = 5000;
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+    AW_REQUIRE(manager.createProject("Long"));
+    makeLongDeck(storage, manager, kFrames);
+    const_cast<project::Timeline&>(manager.project().timeline()).tracks[0].gain = 0.5F;
+
+    TransferMtp mtp;
+    project::ExportService exporter{storage, mtp, manager, queue};
+    project::ExportPlan plan;
+    plan.targetStorage = 1;
+    AW_REQUIRE(exporter.run(plan, 23));
+    AW_CHECK_EQ(mtp.uploaded.size(), std::size_t{44 + kFrames * 36});
+    AW_CHECK(!storage.exists(manager.project().paths().editsDirectory() / "Long.wav"));
+
+    awtest::MemoryStorage verification;
+    verification.addFile("/export.wav", mtp.uploaded);
+    audio::WavReader reader;
+    AW_REQUIRE(reader.open(verification, "/export.wav"));
+    AW_CHECK_EQ(reader.metadata().frameCount, kFrames);
+    audio::AudioBuffer all{12, kFrames};
+    AW_REQUIRE(reader.read(all).hasValue());
+    const float lsb = 1.0F / 8388608.0F;
+    for (const core::FrameCount frame : {0, 2047, 2048, 4096, 4999}) {
+        const float ramp = static_cast<float>(frame) / 1048576.0F;
+        const auto at = static_cast<std::size_t>(frame);
+        AW_CHECK(std::fabs(all.channel(0)[at] - 0.5F * (1.0F / 16.0F + ramp)) <= 2 * lsb);
+        AW_CHECK(std::fabs(all.channel(11)[at] - (12.0F / 16.0F + ramp)) <= 2 * lsb);
+    }
+}
+
+AW_TEST(ExportService, DeletesTheUploadWhenTheRenderFailsPartWay) {
+    // MTP has already been promised the size: the rest is padded, then the
+    // half-rendered object is removed from the TP-7.
+    awtest::MemoryStorage storage;
+    events::EventQueue queue;
+    project::ProjectManager manager{storage, queue};
+    AW_REQUIRE(manager.createProject("Broken"));
+    makeLongDeck(storage, manager, 5000);
+    project::Timeline& timeline = const_cast<project::Timeline&>(manager.project().timeline());
+    timeline.tracks[0].gain = 0.5F;
+    project::Clip missing = timeline.tracks[1].clips.front();
+    missing.id = 99;
+    missing.sourceFile = "missing.wav";
+    missing.sourceRange = {0, 100};
+    missing.timelinePosition = 3000;
+    timeline.tracks[1].clips.push_back(missing);
+
+    TransferMtp mtp;
+    project::ExportService exporter{storage, mtp, manager, queue};
+    project::ExportPlan plan;
+    plan.targetStorage = 1;
+    AW_CHECK(!exporter.run(plan, 24).hasValue());
+    AW_CHECK_EQ(mtp.uploaded.size(), std::size_t{44 + 5000 * 36});
+    AW_CHECK_EQ(mtp.deleted, hal::MtpObjectHandle{9});
+}

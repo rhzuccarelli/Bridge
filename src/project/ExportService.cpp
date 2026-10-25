@@ -1,6 +1,7 @@
 #include "aw/project/ExportService.hpp"
 
 #include "aw/audio/AudioBuffer.hpp"
+#include "aw/audio/SampleConverter.hpp"
 #include "aw/audio/WavReader.hpp"
 #include "aw/audio/WavWriter.hpp"
 #include "aw/core/Logger.hpp"
@@ -13,6 +14,7 @@
 #include <vector>
 #include <cmath>
 #include <optional>
+#include <span>
 
 namespace aw::project {
 namespace {
@@ -97,6 +99,112 @@ std::optional<std::string> passthroughSource(const Timeline& timeline, core::Cha
     return file;
 }
 
+using Clock = std::chrono::steady_clock;
+
+std::string milliseconds(Clock::duration duration) {
+    return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
+}
+
+/// Mixes the deck one block at a time, as the upload asks for data.
+///
+/// One reader per source file, opened once for the whole render. Clips that
+/// read the same file at the same position (every track of an imported deck)
+/// share one read per block. Reopening and re-parsing the files for each block
+/// and track took tens of thousands of opens for one minute of audio on the
+/// P4's SD card.
+class DeckRenderer {
+public:
+    DeckRenderer(hal::StorageInterface& storage, const Project& project, core::ChannelCount channels)
+        : storage_{storage}, project_{project}, output_{channels, kRenderBlockFrames} {}
+
+    /// Mixes `frames` frames from `blockStart` into `output()`.
+    core::Status render(core::FrameIndex blockStart, core::FrameCount frames) {
+        const Timeline& timeline = project_.timeline();
+        output_.setFrameCount(frames);
+        output_.clear();
+        for (std::size_t trackIndex = 0;
+             trackIndex < timeline.tracks.size() && trackIndex < kTrackCount; ++trackIndex) {
+            const Track& track = timeline.tracks[trackIndex];
+            if (track.muted || (timeline.hasSolo() && !track.soloed)) continue;
+            const float pan = std::clamp(track.pan, -1.0F, 1.0F);
+            const float panGain[2]{pan <= 0.0F ? 1.0F : 1.0F - pan,
+                                   pan >= 0.0F ? 1.0F : 1.0F + pan};
+            for (const Clip& clip : track.clips) {
+                const core::FrameIndex overlapStart = std::max(blockStart, clip.timelinePosition);
+                const core::FrameIndex overlapEnd = std::min(blockStart + frames, clip.timelineEnd());
+                if (overlapStart >= overlapEnd) continue;
+                auto source = sourceFor(clip.sourceFile);
+                if (!source) return source.error();
+                const core::FrameIndex sourcePosition = clip.sourceRange.start +
+                                                        overlapStart - clip.timelinePosition;
+                const core::FrameCount overlapFrames = overlapEnd - overlapStart;
+                if (auto status = source.value()->load(sourcePosition, overlapFrames, readTime); !status)
+                    return status;
+                const audio::AudioBuffer& sourceBlock = source.value()->block;
+                const std::size_t destinationOffset = static_cast<std::size_t>(overlapStart - blockStart);
+                const float gain = track.gain * clip.gain;
+                for (std::size_t routeChannel = 0;
+                     routeChannel < clip.destinationChannelCount; ++routeChannel) {
+                    const std::size_t sourceIndex = clip.sourceChannel +
+                        std::min<std::size_t>(routeChannel, clip.sourceChannelCount - 1U);
+                    if (sourceIndex >= sourceBlock.channelCount()) continue;
+                    const std::size_t pairChannel = clip.destinationChannel + routeChannel;
+                    auto destination = output_.channel(static_cast<core::ChannelCount>(
+                        trackIndex * 2U + pairChannel));
+                    const auto samples = sourceBlock.channel(static_cast<core::ChannelCount>(sourceIndex));
+                    for (std::size_t frame = 0; frame < samples.size(); ++frame)
+                        destination[destinationOffset + frame] = std::clamp(
+                            destination[destinationOffset + frame] +
+                                samples[frame] * gain * panGain[pairChannel], -1.0F, 1.0F);
+                }
+            }
+        }
+        return core::success();
+    }
+
+    [[nodiscard]] const audio::AudioBuffer& output() const noexcept { return output_; }
+
+    Clock::duration readTime{};
+
+private:
+    struct Source {
+        std::string file;
+        audio::WavReader reader;
+        audio::AudioBuffer block;
+        core::FrameIndex blockStart{-1};
+
+        core::Status load(core::FrameIndex position, core::FrameCount frames, Clock::duration& time) {
+            if (blockStart == position && block.frameCount() == frames) return core::success();
+            if (reader.position() != position)
+                if (auto status = reader.seek(position); !status) return status;
+            block.setFrameCount(frames);
+            const auto started = Clock::now();
+            auto read = reader.read(block);
+            time += Clock::now() - started;
+            if (!read) return read.error();
+            blockStart = position;
+            return core::success();
+        }
+    };
+
+    core::Result<Source*> sourceFor(const std::string& file) {
+        for (const auto& source : sources_)
+            if (source->file == file) return source.get();
+        auto source = std::make_unique<Source>();
+        source->file = file;
+        if (auto status = source->reader.open(storage_, project_.paths().audioFile(file)); !status)
+            return status.error();
+        source->block = audio::AudioBuffer{source->reader.metadata().format.channels, kRenderBlockFrames};
+        sources_.push_back(std::move(source));
+        return sources_.back().get();
+    }
+
+    hal::StorageInterface& storage_;
+    const Project& project_;
+    audio::AudioBuffer output_;
+    std::vector<std::unique_ptr<Source>> sources_;
+};
+
 }  // namespace
 
 ExportService::ExportService(hal::StorageInterface& storage, hal::MTPInterface& mtp,
@@ -153,34 +261,28 @@ core::Status ExportService::run(const ExportPlan& plan, std::uint32_t jobId) {
         }
         if (acid) break;
     }
-    const std::uint64_t estimatedBytes = (acid ? 76U : 44U) +
-                                          static_cast<std::uint64_t>(totalFrames) *
-                                                  format.bytesPerFrame();
+    const std::vector<std::byte> header = audio::WavWriter::header(format, acid, totalFrames);
 
     std::string notDirect;
     const std::optional<std::string> direct =
         passthroughSource(timeline, channels, totalFrames, storage_, project.paths(), notDirect);
-    if (!direct) core::log::info("export", "rendering the deck: " + notDirect);
-    std::uint64_t uploadBytes = estimatedBytes;
+    std::unique_ptr<hal::FileHandle> directFile;
+    std::uint64_t uploadBytes = header.size() +
+                                static_cast<std::uint64_t>(totalFrames) * format.bytesPerFrame();
     if (direct) {
-        auto sourceFile = storage_.open(project.paths().audioFile(*direct), hal::OpenMode::Read);
-        auto sourceSize = sourceFile ? sourceFile.value()->size()
-                                     : core::Result<std::uint64_t>{sourceFile.error()};
-        if (!sourceSize) {
-            postFinished(eventQueue_, jobId, sourceSize.error());
-            return sourceSize.error();
+        auto opened = storage_.open(project.paths().audioFile(*direct), hal::OpenMode::Read);
+        auto size = opened ? opened.value()->size() : core::Result<std::uint64_t>{opened.error()};
+        if (!size) {
+            postFinished(eventQueue_, jobId, size.error());
+            return size.error();
         }
-        uploadBytes = sourceSize.value();
+        directFile = std::move(opened).value();
+        uploadBytes = size.value();
         core::log::info("export", "deck plays " + *direct + " unchanged; sending it without rendering");
+    } else {
+        core::log::info("export", "rendering the deck: " + notDirect);
     }
 
-    auto localFree = storage_.freeSpaceBytes(project.paths().editsDirectory());
-    if (!direct && (!localFree || localFree.value() < estimatedBytes)) {
-        core::Status error = localFree ? core::makeError(core::ErrorCode::OutOfSpace, "no render space")
-                                       : localFree.error();
-        postFinished(eventQueue_, jobId, error);
-        return error;
-    }
     auto storages = mtp_.storages();
     if (!storages) {
         postFinished(eventQueue_, jobId, storages.error());
@@ -194,146 +296,56 @@ core::Status ExportService::run(const ExportPlan& plan, std::uint32_t jobId) {
         return error;
     }
 
-    const core::Path renderPath = direct ? project.paths().audioFile(*direct)
-                                         : project.paths().editsDirectory() / targetName;
-    core::Status status = direct ? core::success() : render(plan, renderPath, format, acid, jobId);
-    if (!status) {
-        postFinished(eventQueue_, jobId, status);
-        return status;
+    if (direct) {
+        return upload(plan, targetName, uploadBytes, jobId,
+                      [&](std::span<std::byte> buffer) -> core::Result<std::size_t> {
+                          return directFile->read(buffer);
+                      });
     }
-    return upload(plan, renderPath, targetName, uploadBytes, jobId);
-}
 
-core::Status ExportService::render(const ExportPlan& /*plan*/, const core::Path& renderPath,
-                                   const core::AudioFormat& format,
-                                   const std::optional<audio::AcidMetadata>& acid, std::uint32_t jobId) {
-    const Project& project = projects_.project();
-    const Timeline& timeline = project.timeline();
-    const core::FrameCount totalFrames = timeline.lengthFrames();
-    const core::ChannelCount channels = format.channels;
-    const std::string targetName = renderPath.filename().string();
-    (void)storage_.remove(renderPath);
-    audio::WavWriter writer;
-    core::Status status = writer.create(storage_, renderPath, format, acid);
-    audio::AudioBuffer output{channels, kRenderBlockFrames};
-
-    // One reader per source file, opened once for the whole render. Clips that
-    // read the same file at the same position (every track of an imported
-    // deck) share one read per block. Reopening and re-parsing the files for
-    // each block and track took tens of thousands of opens for one minute of
-    // audio on the P4's SD card.
-    struct Source {
-        std::string file;
-        audio::WavReader reader;
-        audio::AudioBuffer block;
-        core::FrameIndex blockStart{-1};
-    };
-    std::vector<std::unique_ptr<Source>> sources;
-    using clock = std::chrono::steady_clock;
-    using namespace std::chrono_literals;
-    const auto started = clock::now();
-    int loggedTenth = 0;
-    clock::duration readTime{};
-    clock::duration writeTime{};
+    // The render goes straight into the upload: the header, then each block
+    // converted to 24-bit as MTP asks for more. Nothing is written to the card.
+    DeckRenderer renderer{storage_, project, channels};
+    std::vector<std::byte> pending = header;
+    std::size_t pendingOffset = 0;
+    core::FrameIndex nextFrame = 0;
+    Clock::duration renderTime{};
+    std::vector<std::span<const float>> planes(channels);
     core::log::info("export", "rendering " + std::to_string(totalFrames) + " frames, " +
-                                  std::to_string(channels) + " channels to " + targetName);
-    const auto sourceFor = [&](const std::string& file) -> Source* {
-        for (const auto& source : sources)
-            if (source->file == file) return source.get();
-        auto source = std::make_unique<Source>();
-        source->file = file;
-        status = source->reader.open(storage_, project.paths().audioFile(file));
-        if (!status) return nullptr;
-        source->block = audio::AudioBuffer{source->reader.metadata().format.channels, kRenderBlockFrames};
-        sources.push_back(std::move(source));
-        return sources.back().get();
+                                  std::to_string(channels) + " channels into the upload");
+    const auto produce = [&](std::span<std::byte> buffer) -> core::Result<std::size_t> {
+        if (pendingOffset == pending.size()) {
+            if (nextFrame >= totalFrames) return std::size_t{0};
+            const auto started = Clock::now();
+            const core::FrameCount frames = std::min(kRenderBlockFrames, totalFrames - nextFrame);
+            if (auto status = renderer.render(nextFrame, frames); !status) return status.error();
+            for (core::ChannelCount channel = 0; channel < channels; ++channel)
+                planes[channel] = renderer.output().channel(channel);
+            pending.resize(static_cast<std::size_t>(frames) * format.bytesPerFrame());
+            if (auto status = audio::convert::fromFloat(planes, format, pending, frames); !status)
+                return status.error();
+            pendingOffset = 0;
+            nextFrame += frames;
+            renderTime += Clock::now() - started;
+        }
+        const std::size_t n = std::min(buffer.size(), pending.size() - pendingOffset);
+        std::copy_n(pending.begin() + static_cast<std::ptrdiff_t>(pendingOffset), n, buffer.begin());
+        pendingOffset += n;
+        return n;
     };
-
-    for (core::FrameIndex blockStart = 0; status && blockStart < totalFrames;
-         blockStart += kRenderBlockFrames) {
-        if (cancelRequested_.load(std::memory_order_acquire)) {
-            status = core::makeError(core::ErrorCode::Cancelled, "export cancelled");
-            break;
-        }
-        const core::FrameCount frames = std::min(kRenderBlockFrames, totalFrames - blockStart);
-        output.setFrameCount(frames);
-        output.clear();
-        for (std::size_t trackIndex = 0;
-             trackIndex < timeline.tracks.size() && trackIndex < kTrackCount; ++trackIndex) {
-            const Track& track = timeline.tracks[trackIndex];
-            if (track.muted || (timeline.hasSolo() && !track.soloed)) continue;
-            const float pan = std::clamp(track.pan, -1.0F, 1.0F);
-            const float panGain[2]{pan <= 0.0F ? 1.0F : 1.0F - pan,
-                                   pan >= 0.0F ? 1.0F : 1.0F + pan};
-            for (const Clip& clip : track.clips) {
-                const core::FrameIndex overlapStart = std::max(blockStart, clip.timelinePosition);
-                const core::FrameIndex overlapEnd = std::min(blockStart + frames, clip.timelineEnd());
-                if (overlapStart >= overlapEnd) continue;
-                Source* source = sourceFor(clip.sourceFile);
-                if (source == nullptr) break;
-                const core::FrameIndex sourcePosition = clip.sourceRange.start +
-                                                        overlapStart - clip.timelinePosition;
-                const core::FrameCount overlapFrames = overlapEnd - overlapStart;
-                if (source->blockStart != sourcePosition || source->block.frameCount() != overlapFrames) {
-                    if (source->reader.position() != sourcePosition) {
-                        status = source->reader.seek(sourcePosition);
-                        if (!status) break;
-                    }
-                    source->block.setFrameCount(overlapFrames);
-                    const auto readStarted = clock::now();
-                    auto read = source->reader.read(source->block);
-                    readTime += clock::now() - readStarted;
-                    if (!read) { status = read.error(); break; }
-                    source->blockStart = sourcePosition;
-                }
-                const audio::AudioBuffer& sourceBlock = source->block;
-                const std::size_t destinationOffset = static_cast<std::size_t>(overlapStart - blockStart);
-                const float gain = track.gain * clip.gain;
-                for (std::size_t routeChannel = 0;
-                     routeChannel < clip.destinationChannelCount; ++routeChannel) {
-                    const std::size_t sourceIndex = clip.sourceChannel +
-                        std::min<std::size_t>(routeChannel, clip.sourceChannelCount - 1U);
-                    if (sourceIndex >= sourceBlock.channelCount()) continue;
-                    const std::size_t pairChannel = clip.destinationChannel + routeChannel;
-                    auto destination = output.channel(static_cast<core::ChannelCount>(
-                        trackIndex * 2U + pairChannel));
-                    const auto samples = sourceBlock.channel(static_cast<core::ChannelCount>(sourceIndex));
-                    for (std::size_t frame = 0; frame < samples.size(); ++frame)
-                        destination[destinationOffset + frame] = std::clamp(
-                            destination[destinationOffset + frame] +
-                                samples[frame] * gain * panGain[pairChannel], -1.0F, 1.0F);
-                }
-            }
-            if (!status) break;
-        }
-        const auto writeStarted = clock::now();
-        if (status) status = writer.write(output);
-        writeTime += clock::now() - writeStarted;
-        const auto percent = static_cast<std::uint8_t>(std::min<core::FrameIndex>(
-            50, (blockStart + frames) * 50 / totalFrames));
-        eventQueue_.post(events::JobProgressEvent{events::JobKind::Export, jobId, 0, 2, percent});
-        if (percent / 5 != loggedTenth) {
-            loggedTenth = percent / 5;
-            core::log::info("export", "rendered " + std::to_string(percent * 2) + " % (" +
-                                          std::to_string((clock::now() - started) / 1ms) + " ms)");
-        }
-    }
-    sources.clear();  // Closes the source files before the upload opens the render.
-    const auto ms = [](clock::duration d) {
-        return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(d).count());
-    };
-    const auto total = clock::now() - started;
-    core::log::info("export", "render took " + ms(total) + " ms: reading sources " + ms(readTime) +
-                                  " ms, writing " + ms(writeTime) + " ms, mixing " +
-                                  ms(total - readTime - writeTime) + " ms");
-    if (status) status = writer.close();
-    else (void)writer.close();
-    if (!status) (void)storage_.remove(renderPath);
+    const auto started = Clock::now();
+    core::Status status = upload(plan, targetName, uploadBytes, jobId, produce);
+    const auto total = Clock::now() - started;
+    core::log::info("export", "export took " + milliseconds(total) + " ms: reading sources " +
+                                  milliseconds(renderer.readTime) + " ms, mixing and converting " +
+                                  milliseconds(renderTime - renderer.readTime) + " ms, USB " +
+                                  milliseconds(total - renderTime) + " ms");
     return status;
 }
 
-core::Status ExportService::upload(const ExportPlan& plan, const core::Path& sourcePath,
-                                   std::string targetName, std::uint64_t bytes, std::uint32_t jobId) {
+core::Status ExportService::upload(const ExportPlan& plan, std::string targetName,
+                                   std::uint64_t bytes, std::uint32_t jobId,
+                                   const DataSource& produce) {
     core::Status status = core::success();
     auto conflicts = mtp_.listObjects(plan.targetStorage, plan.targetFolder);
     if (!conflicts) status = conflicts.error();
@@ -360,29 +372,45 @@ core::Status ExportService::upload(const ExportPlan& plan, const core::Path& sou
         }
     }
 
-    auto file = status ? storage_.open(sourcePath, hal::OpenMode::Read)
-                       : core::Result<std::unique_ptr<hal::FileHandle>>{status.error()};
-    if (status && !file) status = file.error();
     if (status) {
+        // MTP takes exactly `bytes` once SendObjectInfo has announced them, and
+        // a data phase cannot be cut short. After a failure or a cancel the
+        // rest is zeros, and the object is deleted once it is complete.
+        std::uint64_t sent = 0;
+        bool failed = false;
         auto source = [&](std::span<std::byte> buffer) -> std::size_t {
-            if (cancelRequested_.load(std::memory_order_acquire)) return 0;
-            auto read = file.value()->read(buffer);
-            if (!read) { status = read.error(); return 0; }
-            return read.value();
+            buffer = buffer.first(static_cast<std::size_t>(
+                std::min<std::uint64_t>(buffer.size(), bytes - sent)));
+            if (buffer.empty()) return 0;
+            std::size_t n = 0;
+            if (!failed && !cancelRequested_.load(std::memory_order_acquire)) {
+                auto produced = produce(buffer);
+                if (!produced) status = produced.error();
+                else if (produced.value() == 0)
+                    status = core::makeError(core::ErrorCode::IoError, "export data ended early");
+                else n = produced.value();
+                failed = !status;
+            }
+            if (n == 0) {
+                std::fill(buffer.begin(), buffer.end(), std::byte{0});
+                n = buffer.size();
+            }
+            sent += n;
+            return n;
         };
         auto progress = [&](std::uint64_t done, std::uint64_t total) {
-            const auto percent = static_cast<std::uint8_t>(50 + (total == 0 ? 0 : done * 50 / total));
-            eventQueue_.post(events::JobProgressEvent{events::JobKind::Export, jobId, 1, 2, percent});
+            const auto percent = static_cast<std::uint8_t>(total == 0 ? 0 : done * 100 / total);
+            eventQueue_.post(events::JobProgressEvent{events::JobKind::Export, jobId, 0, 1, percent});
             return !cancelRequested_.load(std::memory_order_acquire);
         };
-        const auto uploadStarted = std::chrono::steady_clock::now();
         core::log::info("export", "sending " + std::to_string(bytes >> 20) + " MiB to the TP-7");
         auto uploaded = mtp_.writeObject(plan.targetStorage, plan.targetFolder, targetName,
                                          bytes, source, progress);
-        core::log::info("export", "send returned after " +
-                                      std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          std::chrono::steady_clock::now() - uploadStarted).count()) + " ms");
-        if (!uploaded) status = uploaded.error();
+        if (!uploaded) {
+            if (status) status = uploaded.error();
+        } else if (!status) {
+            (void)mtp_.deleteObject(uploaded.value());
+        }
     }
     if (cancelRequested_.load(std::memory_order_acquire))
         status = core::makeError(core::ErrorCode::Cancelled, "export cancelled");

@@ -1,8 +1,11 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -40,12 +43,11 @@ struct ExportPlan {
 
 /// Renders tracks and writes them back to the TP-7 over MTP.
 ///
-/// The render half depends on Phase 4. A track with
-/// edits is not a file on disk - it is a clip list - so export is
-/// render-to-`edits/` followed by an MTP upload of the rendered file.  Doing it
-/// in two steps rather than streaming the render straight into MTP is
-/// deliberate: MTP needs the exact byte count up front, which you only have once
-/// the file exists.
+/// A track with edits is not a file on disk - it is a clip list - so the deck
+/// is rendered block by block straight into the MTP upload. MTP needs the exact
+/// byte count up front; a 24-bit WAV's size follows from the deck's length, so
+/// nothing is written to local storage first. An unedited deck is sent as its
+/// source file.
 ///
 /// Never overwrites without `ExportConflictPolicy::Overwrite`, which the UI only
 /// sets after a confirmation screen.
@@ -69,14 +71,13 @@ public:
     void requestCancel() noexcept;
 
 private:
-    /// Mixes the active deck into a WAV at `renderPath`; no events posted.
-    core::Status render(const ExportPlan& plan, const core::Path& renderPath,
-                        const core::AudioFormat& format,
-                        const std::optional<audio::AcidMetadata>& acid, std::uint32_t jobId);
-    /// Sends `sourcePath` (a render, or an unchanged source WAV) to the TP-7
-    /// and posts the finished event.
-    core::Status upload(const ExportPlan& plan, const core::Path& sourcePath, std::string targetName,
-                        std::uint64_t bytes, std::uint32_t jobId);
+    /// Fills `buffer` with the export's next bytes; 0 means the data ended.
+    using DataSource = std::function<core::Result<std::size_t>(std::span<std::byte> buffer)>;
+
+    /// Sends `bytes` bytes from `produce` to the TP-7 as `targetName` and posts
+    /// the finished event.
+    core::Status upload(const ExportPlan& plan, std::string targetName, std::uint64_t bytes,
+                        std::uint32_t jobId, const DataSource& produce);
 
     hal::StorageInterface& storage_;
     hal::MTPInterface& mtp_;
