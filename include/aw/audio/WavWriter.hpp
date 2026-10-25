@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include "aw/audio/AudioBuffer.hpp"
 #include "aw/audio/WavMetadata.hpp"
@@ -44,6 +47,13 @@ public:
     /// Patches the header with the final sizes and closes.  Must be called;
     /// the destructor does it too but cannot report failure.
     [[nodiscard]] core::Status close();
+
+    /// The complete header of a WAV holding `frames` frames, sizes filled in,
+    /// for a file streamed elsewhere (an MTP upload) rather than written here.
+    /// The data follows it directly.
+    [[nodiscard]] static std::vector<std::byte> header(
+        const core::AudioFormat& format, const std::optional<AcidMetadata>& acid,
+        core::FrameCount frames);
 
     [[nodiscard]] bool isOpen() const noexcept;
     [[nodiscard]] core::FrameCount framesWritten() const noexcept;

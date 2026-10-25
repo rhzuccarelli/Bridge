@@ -105,30 +105,16 @@ WavWriter::~WavWriter() {
 WavWriter::WavWriter(WavWriter&&) noexcept = default;
 WavWriter& WavWriter::operator=(WavWriter&&) noexcept = default;
 
-core::Status WavWriter::create(hal::StorageInterface& storage,
-                               const core::Path& path,
-                               const core::AudioFormat& format,
-                               const std::optional<AcidMetadata>& acid) {
-    if (isOpen()) {
-        if (auto status = close(); !status) {
-            return status;
-        }
-    }
-    if (format.sampleRate == 0 || format.channels == 0 || format.channels > 12 ||
-        format.bytesPerFrame() == 0) {
-        return core::makeError(core::ErrorCode::InvalidArgument, "invalid WAV format");
-    }
-
-    auto file = storage.open(path, hal::OpenMode::Write);
-    if (!file) {
-        return file.error();
-    }
-
+std::vector<std::byte> WavWriter::header(const core::AudioFormat& format,
+                                         const std::optional<AcidMetadata>& acid,
+                                         core::FrameCount frames) {
+    const auto dataBytes =
+        static_cast<std::uint32_t>(static_cast<std::uint64_t>(frames) * format.bytesPerFrame());
     std::vector<std::byte> header;
     header.reserve(acid ? 76 : 44);
     header.insert(header.end(),
                   {std::byte{'R'}, std::byte{'I'}, std::byte{'F'}, std::byte{'F'}});
-    appendLittle<std::uint32_t>(header, acid ? 68U : 36U);
+    appendLittle<std::uint32_t>(header, (acid ? 68U : 36U) + dataBytes);
     header.insert(header.end(),
                   {std::byte{'W'}, std::byte{'A'}, std::byte{'V'}, std::byte{'E'}});
     header.insert(header.end(),
@@ -151,7 +137,30 @@ core::Status WavWriter::create(hal::StorageInterface& storage,
     }
     header.insert(header.end(),
                   {std::byte{'d'}, std::byte{'a'}, std::byte{'t'}, std::byte{'a'}});
-    appendLittle<std::uint32_t>(header, 0U);
+    appendLittle<std::uint32_t>(header, dataBytes);
+    return header;
+}
+
+core::Status WavWriter::create(hal::StorageInterface& storage,
+                               const core::Path& path,
+                               const core::AudioFormat& format,
+                               const std::optional<AcidMetadata>& acid) {
+    if (isOpen()) {
+        if (auto status = close(); !status) {
+            return status;
+        }
+    }
+    if (format.sampleRate == 0 || format.channels == 0 || format.channels > 12 ||
+        format.bytesPerFrame() == 0) {
+        return core::makeError(core::ErrorCode::InvalidArgument, "invalid WAV format");
+    }
+
+    auto file = storage.open(path, hal::OpenMode::Write);
+    if (!file) {
+        return file.error();
+    }
+
+    const std::vector<std::byte> header = WavWriter::header(format, acid, 0);
 
     if (auto status = writeAll(*file.value(), header); !status) {
         return status;

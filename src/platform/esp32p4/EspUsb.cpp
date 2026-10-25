@@ -493,25 +493,25 @@ void resetTp7(std::shared_ptr<EspUsbStack> stack, std::shared_ptr<usb::Tp7MidiPo
     };
     auto* job = new Job{std::move(stack), std::move(midi), &mtp};
     const auto run = [](void* context) {
-        std::unique_ptr<Job> job{static_cast<Job*>(context)};
-        if (auto status = job->midi->send(packSysEx(kEnterMtp)); !status) {
+        std::unique_ptr<Job> owned{static_cast<Job*>(context)};
+        if (auto status = owned->midi->send(packSysEx(kEnterMtp)); !status) {
             core::log::warning(kModule, "TP-7 reset: " + status.error().describe());
         } else {
             std::optional<hal::UsbDeviceInfo> device;
             for (int i = 0; i < 80 && !device; ++i) {
                 vTaskDelay(pdMS_TO_TICKS(100));
-                for (const hal::UsbDeviceInfo& info : job->stack->devices())
+                for (const hal::UsbDeviceInfo& info : owned->stack->devices())
                     if (info.vendorId == kTeenageEngineering && info.supportsMtp) device = info;
             }
             if (!device) {
                 core::log::warning(kModule, "TP-7 reset: it did not come back in MTP mode");
-            } else if (job->mtp->hasSession()) {
+            } else if (owned->mtp->hasSession()) {
                 core::log::info(kModule, "TP-7 reset: an MTP session is open; leaving it in MTP mode");
-            } else if (auto status = job->mtp->openSession(device->key()); status) {
-                job->mtp->closeSession();  // Closing the session returns it to USB audio.
+            } else if (auto opened = owned->mtp->openSession(device->key()); opened) {
+                owned->mtp->closeSession();  // Closing the session returns it to USB audio.
                 core::log::info(kModule, "TP-7 reset: back to USB audio");
             } else {
-                core::log::warning(kModule, "TP-7 reset: " + status.error().describe());
+                core::log::warning(kModule, "TP-7 reset: " + opened.error().describe());
             }
         }
         busy.store(false);
