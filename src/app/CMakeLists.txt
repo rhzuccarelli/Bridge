@@ -10,7 +10,7 @@ add_library(aw::app ALIAS aw_app)
 
 target_include_directories(aw_app PUBLIC ${AW_INCLUDE_DIR})
 target_link_libraries(aw_app
-    PUBLIC aw::core aw::hal aw::events aw::display aw::audio aw::project aw::mtp aw::ui
+    PUBLIC aw::core aw::hal aw::events aw::display aw::audio aw::project aw::mtp aw::devices aw::ui
            aw::compiler_options)
 
 # On the ESP32-P4 the composition root is app_main in firmware/esp32p4/bridge.

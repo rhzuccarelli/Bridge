@@ -10,6 +10,7 @@
 #include "aw/hal/DeviceModeInterface.hpp"
 #include "aw/hal/MTPInterface.hpp"
 #include "aw/hal/USBInterface.hpp"
+#include "aw/hal/UsbControlInterface.hpp"
 
 namespace aw::platform::esp32p4 {
 
@@ -25,6 +26,8 @@ namespace aw::platform::esp32p4 {
 ///  - `audioOutput`: monitor audio through the TP-7's USB playback endpoint
 ///    (48 kHz stereo from the engine, sent as 96 kHz six-channel); fails to
 ///    open while no TP-7 is in USB-audio mode,
+///  - `usbControl`: vendor requests on endpoint 0 of any attached device (the
+///    Apogee Duet's input settings),
 ///  - `sendMidi`: raw USB-MIDI event packets (4 bytes each, cable 0) to the
 ///    TP-7, for bench tooling such as arming a recording.
 struct EspUsbBackends {
@@ -32,6 +35,7 @@ struct EspUsbBackends {
     std::unique_ptr<hal::MTPInterface> mtp;
     std::unique_ptr<hal::DeviceModeInterface> deviceMode;
     std::unique_ptr<hal::AudioOutputInterface> audioOutput;
+    std::unique_ptr<hal::UsbControlInterface> usbControl;
     std::function<core::Status(std::span<const std::uint8_t>)> sendMidi;
 };
 

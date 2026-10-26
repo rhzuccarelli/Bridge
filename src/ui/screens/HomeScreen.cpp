@@ -8,9 +8,8 @@
 namespace aw::ui {
 
 namespace {
-/// The home actions, in encoder order.  Four entries, so the whole hub is one
-/// short list rather than a menu.
-constexpr int kActionCount = 7;
+/// The home actions, in encoder order: one short list rather than a menu.
+constexpr int kActionCount = 8;
 }  // namespace
 
 HomeScreen::HomeScreen(project::ProjectManager& projects, audio::AudioEngine& engine) noexcept
@@ -43,7 +42,8 @@ NavigationRequest HomeScreen::handleEvent(const events::Event& event) {
                 case 3: return NavigationRequest::push(ScreenId::Decks);
                 case 4: return NavigationRequest::push(ScreenId::Import);
                 case 5: return NavigationRequest::push(ScreenId::Export);
-                default: return NavigationRequest::push(ScreenId::ProjectBrowser);
+                case 6: return NavigationRequest::push(ScreenId::ProjectBrowser);
+                default: return NavigationRequest::push(ScreenId::Duet);
             }
         }
     }
@@ -68,9 +68,9 @@ void HomeScreen::render(display::Painter& painter) {
                         engine_.transport().state() == events::TransportState::Paused ? "PAUS" : "STOP";
     painter.drawTextIn({90, 0, 36, 12}, state, font, display::palette::kText,
                        display::TextAlign::Right);
-    constexpr std::array<std::string_view, 7> actions{
+    constexpr std::array<std::string_view, kActionCount> actions{
         "TRANSPORT", "TRACKS", "COPY CHANNEL", "CHANGE DECK",
-        "IMPORT TP-7", "EXPORT TP-7", "PROJECTS"};
+        "IMPORT TP-7", "EXPORT TP-7", "PROJECTS", "DUET INPUTS"};
     for (int row = 0; row < 4; ++row) {
         const int index = scrollOffset_ + row;
         if (index >= kActionCount) break;

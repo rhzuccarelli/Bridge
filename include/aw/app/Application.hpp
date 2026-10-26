@@ -5,6 +5,7 @@
 
 #include "aw/audio/AudioEngine.hpp"
 #include "aw/core/Result.hpp"
+#include "aw/devices/ApogeeDuet.hpp"
 #include "aw/display/DisplayFlusher.hpp"
 #include "aw/display/Framebuffer.hpp"
 #include "aw/events/EventBus.hpp"
@@ -75,6 +76,7 @@ private:
     std::unique_ptr<mtp::MtpBrowser> mtpBrowser_;
     std::unique_ptr<project::ImportService> importService_;
     std::unique_ptr<project::ExportService> exportService_;
+    std::unique_ptr<devices::ApogeeDuet> duet_;
     std::unique_ptr<ui::TaskRunner> taskRunner_;
 
     std::unique_ptr<display::Framebuffer> framebuffer_;

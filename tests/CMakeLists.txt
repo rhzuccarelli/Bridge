@@ -11,6 +11,7 @@ add_executable(aw_tests
     support/MemoryStorage.cpp
     audio/AudioTests.cpp
     core/CoreTests.cpp
+    devices/DeviceTests.cpp
     display/DisplayTests.cpp
     events/EventTests.cpp
     mtp/MtpTests.cpp
@@ -28,6 +29,7 @@ target_link_libraries(aw_tests PRIVATE
     aw::audio
     aw::project
     aw::mtp
+    aw::devices
     aw::display
     aw::ui
     aw::compiler_options)

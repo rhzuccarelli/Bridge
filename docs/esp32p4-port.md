@@ -371,6 +371,34 @@ closed the session, and the TP-7 returned to audio mode. Each return logs
 Not yet exercised: copying a take (it needs the SD card), and Export (it needs
 a project, so it also waits on storage).
 
+## Apogee Duet 2 input types (2026-10-26)
+
+Home → DUET INPUTS shows the type of each Duet input and changes it. Turn to
+pick an input, then push. Turn to pick +4DBU, -10DBV, MIC or INST, then push
+to send it; Back cancels. Only the confirmed type is sent, so the Duet never
+switches through its microphone stage while the knob turns. The Duet replaces
+the TP-7 on the P4's USB port for this.
+
+- **Protocol.** Apogee's Maestro app sets everything with one-byte vendor
+  requests on endpoint 0. take_control (github.com/stefanocoding/take_control)
+  worked them out. The input type is request 22: read with request type 0xC0,
+  write with 0x40, wValue 0, the input (0 or 1) as wIndex, and the value 0
+  for +4 dBu, 1 for -10 dBV, 2 for Mic and 3 for Instrument. As Maestro does,
+  `devices::ApogeeDuet` first ungroups the inputs (request 68 → 0 on both).
+- **Two Duet 2s.** take_control targets the USB 2.0 compliant Duet 2 (product
+  0x0016). The bench unit is the original Duet 2, 0c60:0007, and answers the
+  same requests. Bridge tries the ID that last worked, then the other one.
+- **Layers.** `hal::UsbControlInterface` is a narrow control-request call
+  that is optional in `Platform`. On the P4, `EspUsbControl` leases the device
+  for one request and uses the existing `usb::controlTransfer`. Endpoint 0
+  belongs to no interface, so this works while a class driver streams the
+  device's audio. The Pi has no backend yet: libusb could do it with
+  `libusb_control_transfer`.
+- **Bench.** The page read +4DBU, +4DBU. Setting input 1 to INST read back
+  INST, and the Duet still reported INST after a Bridge reboot. Setting it
+  back to +4DBU read back +4DBU. With no Duet, the page says NO DUET, and the
+  log names what is attached instead.
+
 ## If a TP-7 does not connect
 
 On the bench the TP-7 connected on the first attempt (see above). When it does

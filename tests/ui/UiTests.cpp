@@ -1,5 +1,12 @@
+#include "aw/display/Framebuffer.hpp"
+#include "aw/display/Painter.hpp"
 #include "aw/ui/Navigator.hpp"
+#include "aw/ui/screens/DuetScreen.hpp"
 #include "framework/Test.hpp"
+
+#include <array>
+#include <functional>
+#include <span>
 
 using namespace aw;
 
@@ -106,4 +113,103 @@ AW_TEST(Navigator, AppliesScreenRequests) {
 
     AW_CHECK(navigator.apply(ui::NavigationRequest::back()));
     AW_CHECK_EQ(navigator.depth(), std::size_t{1});
+}
+
+namespace {
+
+/// Runs each task at once, on the caller's thread.
+class InlineTaskRunner final : public ui::TaskRunner {
+public:
+    core::Status submit(std::function<void()> task) override {
+        task();
+        return core::success();
+    }
+};
+
+/// Input types behind endpoint 0, as an Apogee Duet keeps them.
+class FakeDuetUsb final : public hal::UsbControlInterface {
+public:
+    core::Result<std::size_t> control(std::uint16_t, std::uint16_t, const hal::UsbControlSetup& setup,
+                                      std::span<std::uint8_t> data) override {
+        if (!attached) return core::makeError(core::ErrorCode::DeviceNotConnected, "no Duet");
+        if (setup.request != 22) return data.size();  // Grouping: accepted, not modelled.
+        if ((setup.requestType & 0x80) != 0) data[0] = types[setup.index];
+        else {
+            types[setup.index] = data[0];
+            ++writes;
+        }
+        return data.size();
+    }
+    bool attached{true};
+    std::array<std::uint8_t, 2> types{0, 0};
+    int writes{0};
+};
+
+/// Hands every event the worker posted to the screen.
+void deliver(events::EventQueue& queue, ui::Screen& screen) {
+    while (auto event = queue.poll()) (void)screen.handleEvent(*event);
+}
+
+events::Event press(core::ButtonId id) {
+    return events::ButtonEvent{id, core::ButtonAction::Pressed, 0};
+}
+
+}  // namespace
+
+AW_TEST(DuetScreen, SendsOnlyTheConfirmedType) {
+    FakeDuetUsb usb;
+    devices::ApogeeDuet duet{usb};
+    InlineTaskRunner tasks;
+    events::EventQueue queue;
+    ui::DuetScreen screen{duet, tasks, queue};
+    screen.onEnter();
+    deliver(queue, screen);
+
+    (void)screen.handleEvent(press(core::ButtonId::EncoderPush));  // Edit input 1.
+    (void)screen.handleEvent(events::EncoderEvent{3, 0});          // +4dBu -> Instrument.
+    AW_CHECK_EQ(usb.writes, 0);
+    (void)screen.handleEvent(press(core::ButtonId::EncoderPush));
+    deliver(queue, screen);
+
+    AW_CHECK_EQ(usb.writes, 1);
+    AW_CHECK_EQ(usb.types[0], std::uint8_t{3});
+    AW_CHECK_EQ(usb.types[1], std::uint8_t{0});
+}
+
+AW_TEST(DuetScreen, BackCancelsAnEditWithoutLeaving) {
+    FakeDuetUsb usb;
+    devices::ApogeeDuet duet{usb};
+    InlineTaskRunner tasks;
+    events::EventQueue queue;
+    ui::DuetScreen screen{duet, tasks, queue};
+    screen.onEnter();
+    deliver(queue, screen);
+
+    (void)screen.handleEvent(events::EncoderEvent{1, 0});  // Input 2.
+    (void)screen.handleEvent(press(core::ButtonId::EncoderPush));
+    (void)screen.handleEvent(events::EncoderEvent{2, 0});
+    const auto back = screen.handleEvent(press(core::ButtonId::Back));
+    AW_CHECK(back.intent != ui::NavigationIntent::Ignored);  // Not a pop.
+    AW_CHECK_EQ(usb.writes, 0);
+    // Out of the edit, Back leaves the screen as everywhere else.
+    AW_CHECK(screen.handleEvent(press(core::ButtonId::Back)).intent == ui::NavigationIntent::Ignored);
+}
+
+AW_TEST(DuetScreen, RendersWithoutADuet) {
+    FakeDuetUsb usb;
+    usb.attached = false;
+    devices::ApogeeDuet duet{usb};
+    InlineTaskRunner tasks;
+    events::EventQueue queue;
+    ui::DuetScreen screen{duet, tasks, queue};
+    screen.onEnter();
+    deliver(queue, screen);
+    (void)screen.handleEvent(press(core::ButtonId::EncoderPush));  // Retries; still none.
+    deliver(queue, screen);
+    AW_CHECK_EQ(usb.writes, 0);
+
+    display::Framebuffer framebuffer{128, 64};
+    display::Painter painter{framebuffer};
+    screen.render(painter);
+    AW_CHECK(!screen.isDirty());
 }

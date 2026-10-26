@@ -107,6 +107,55 @@ private:
     std::shared_ptr<usb::Tp7MidiPort> midi_;
 };
 
+// --- Control requests --------------------------------------------------------
+
+/// Vendor and class requests on endpoint 0, for devices such as an Apogee Duet.
+/// The device is leased for the one request, so an unplug cannot close it
+/// mid-transfer.
+class EspUsbControl final : public hal::UsbControlInterface {
+public:
+    explicit EspUsbControl(std::shared_ptr<EspUsbStack> stack) : stack_{std::move(stack)} {}
+
+    core::Result<std::size_t> control(std::uint16_t vendorId, std::uint16_t productId,
+                                      const hal::UsbControlSetup& setup,
+                                      std::span<std::uint8_t> data) override {
+        if (data.size() > 0xffff) return core::makeError(core::ErrorCode::InvalidArgument, "control data");
+        auto lease = stack_->acquire([&](const hal::UsbDeviceInfo& info, const usb::Layout&) {
+            return info.vendorId == vendorId && info.productId == productId;
+        });
+        if (!lease) return notAttached(vendorId, productId);
+        usb_setup_packet_t packet{};
+        packet.bmRequestType = setup.requestType;
+        packet.bRequest = setup.request;
+        packet.wValue = setup.value;
+        packet.wIndex = setup.index;
+        packet.wLength = static_cast<std::uint16_t>(data.size());
+        const esp_err_t err = usb::controlTransfer(stack_->client(), lease->handle, packet, data.data());
+        stack_->release(*lease);
+        if (err == ESP_OK) return data.size();
+        const std::string what = "control request " + std::to_string(setup.request) + " to " +
+                                 hex4(vendorId) + ":" + hex4(productId) + ": " + esp_err_to_name(err);
+        if (err == ESP_ERR_TIMEOUT) return core::makeError(core::ErrorCode::Timeout, what);
+        return core::makeError(core::ErrorCode::ProtocolError, what);  // Usually a stall.
+    }
+
+private:
+    /// Names what is attached instead, so a device with another product ID
+    /// (a different model) shows up in the log.
+    core::Error notAttached(std::uint16_t vendorId, std::uint16_t productId) const {
+        std::string attached;
+        for (const hal::UsbDeviceInfo& device : stack_->devices()) {
+            attached += (attached.empty() ? "" : ", ") + hex4(device.vendorId) + ":" +
+                        hex4(device.productId) + " '" + device.product + "'";
+        }
+        return core::makeError(core::ErrorCode::DeviceNotConnected,
+                               "no " + hex4(vendorId) + ":" + hex4(productId) + " attached (" +
+                                   (attached.empty() ? std::string{"nothing"} : attached) + ")");
+    }
+
+    std::shared_ptr<EspUsbStack> stack_;
+};
+
 // --- MTP --------------------------------------------------------------------
 
 /// "YYYYMMDDThhmmss" (any suffix ignored), read as UTC. 0 when unparseable.
@@ -536,6 +585,7 @@ EspUsbBackends createUsbBackends() {
     audio->setDeviceResetHook(
         [stack, midi, mtp = backends.mtp.get()] { resetTp7(stack, midi, *mtp); });
     backends.audioOutput = std::move(audio);
+    backends.usbControl = std::make_unique<EspUsbControl>(stack);
     backends.sendMidi = [midi](std::span<const std::uint8_t> packets) { return midi->send(packets); };
     return backends;
 }
