@@ -40,7 +40,10 @@ USB*, as the Pi does. The rest of the work is ordinary backend code.
   16 KiB in `sdkconfig.defaults`, which is enough to boot. The streaming thread, I/O
   worker and UI need more. Call `esp_pthread_set_cfg` before creating each
   `std::thread` (from the platform layer, so the portable code stays unchanged).
-  The same call sets priorities, which replace `SCHED_FIFO`.
+  The same call sets priorities, which replace `SCHED_FIFO`. The platform
+  makes that call through the placer it installs for `core::threads::start`.
+  A task that uses the FPU stays on the core where it first used it, so a
+  long-running float thread needs placing on purpose.
 - **Memory.** Each shared source stream holds 16 × 512 frames × 12 channels ×
   4-byte floats ≈ 384 KiB. Six differently placed streams come to about 2.3 MiB.
   That fits in PSRAM (P4 boards carry 16–32 MiB) but not in the 768 KiB of internal
@@ -325,8 +328,27 @@ keys and prints the screen, every screen change is logged as `ui screen …`).
   internal RAM: 2048 frames of 12 channels overflow the cache. The render
   now mixes 512-frame blocks, and `WavReader::setReadAhead` keeps each
   source read at one 64 KiB SD command. Reading 59 s, mixing and converting
-  28 s; the upload still waits 53 s for the render. Next: read the sources
-  on a thread of their own, so the SD transfers overlap the mixing.
+  28 s; the upload still waits 53 s for the render.
+- **Sources read in the background (2026-10-26): 60 s.** With
+  `setReadAhead(bytes, true)` each source reads its next 64 KiB chunk on a
+  thread of its own while the render mixes the current one. Mixing and
+  converting 33 s; the render waits 26 s for chunks, the upload 18 s for
+  the render. Four exports in a row: 60.2 to 62.3 s. Two problems came with it, both fixed:
+  - *SD read timeouts.* With the card, USB and both cores busy at once,
+    about one export in three failed on `sdmmc_read_sectors_dma ... status
+    0x900`. FatFS returns what it read before the failure as a short read,
+    then refuses every further call on that file, `lseek` included.
+    `FatFsFile` now remembers where each read ended, reopens a read-only
+    file there and repeats the read (up to three tries). The bench showed it
+    recover mid-export.
+  - *Task watchdog warnings every 5 s (IDLE0).* IDF FreeRTOS pins a task to
+    the core it is on the first time it uses the FPU. The render does float
+    mixing, so it stayed on core 0, the USB tasks' core, at about 80%. The
+    read threads it woke filled the rest of the core. Per-task run-time stats
+    showed core 1 idle 40% of the time. `core::threads::start(ThreadRole::
+    Compute, ...)` lets the platform place such a thread; the P4 pins compute
+    threads to core 1, which the TP-7 audio task only uses outside MTP mode.
+    No warnings since, and the export got a little faster.
 - Imports now save the project (an unsaved deck was lost at power-off and
   left its WAV on the card).
 

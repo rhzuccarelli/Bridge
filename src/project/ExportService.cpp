@@ -5,6 +5,7 @@
 #include "aw/audio/WavReader.hpp"
 #include "aw/audio/WavWriter.hpp"
 #include "aw/core/Logger.hpp"
+#include "aw/core/Thread.hpp"
 #include "aw/storage/ProjectPaths.hpp"
 
 #include <algorithm>
@@ -29,7 +30,8 @@ namespace {
 constexpr core::FrameCount kRenderBlockFrames = 512;
 
 /// Source files are read in chunks of this size, whatever the block size:
-/// one SD command each, through FatFsStorage's 64 KiB transfer buffer.
+/// one SD command each, through FatFsStorage's 64 KiB transfer buffer. Each
+/// source reads its next chunk on a thread of its own while the render mixes.
 constexpr std::size_t kSourceReadAheadBytes = 64 * 1024;
 
 void postFinished(events::EventQueue& queue, std::uint32_t jobId, const core::Status& status) {
@@ -203,7 +205,7 @@ private:
         source->file = file;
         if (auto status = source->reader.open(storage_, project_.paths().audioFile(file)); !status)
             return status.error();
-        source->reader.setReadAhead(kSourceReadAheadBytes);
+        source->reader.setReadAhead(kSourceReadAheadBytes, true);
         source->block = audio::AudioBuffer{source->reader.metadata().format.channels, kRenderBlockFrames};
         sources_.push_back(std::move(source));
         return sources_.back().get();
@@ -226,7 +228,7 @@ public:
                 std::vector<std::byte> header)
         : renderer_{storage, project, format.channels}, format_{format},
           totalFrames_{totalFrames}, current_{std::move(header)} {
-        thread_ = std::thread{[this] { run(); }};
+        thread_ = core::threads::start(core::ThreadRole::Compute, [this] { run(); });
     }
 
     ~RenderAhead() { stop(); }

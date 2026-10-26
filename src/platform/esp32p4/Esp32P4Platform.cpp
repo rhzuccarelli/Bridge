@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "aw/core/Logger.hpp"
+#include "aw/core/Thread.hpp"
 #include "aw/platform/CompositeButtons.hpp"
 #include "aw/platform/CompositeEncoder.hpp"
 #include "aw/platform/FallbackAudioOutput.hpp"
@@ -16,6 +17,7 @@
 #include "aw/platform/esp32p4/EspUsb.hpp"
 #include "aw/platform/esp32p4/FatFsStorage.hpp"
 #include "aw/platform/esp32p4/SerialPreviewDisplay.hpp"
+#include "esp_pthread.h"
 #include "esp_timer.h"
 
 namespace aw::platform::esp32p4 {
@@ -72,10 +74,26 @@ private:
     core::Path root_;
 };
 
+/// Compute threads go to core 1. The USB host tasks are pinned to core 0, and
+/// the TP-7 audio task, the other user of core 1, is gone while the TP-7 is in
+/// MTP mode for an export. An export's render left on core 0 kept it busy
+/// with the read threads it wakes, starving IDLE0 into watchdog warnings.
+void placeThread(core::ThreadRole role) {
+    esp_pthread_cfg_t config = esp_pthread_get_default_config();
+    if (role == core::ThreadRole::Compute) {
+        config.pin_to_core = 1;
+        config.thread_name = "compute";
+    }
+    if (esp_pthread_set_cfg(&config) != ESP_OK) {
+        core::log::warning(kModule, "cannot place the next thread");
+    }
+}
+
 }  // namespace
 
 core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     hal::Platform platform;
+    core::threads::installPlacer(&placeThread);
     platform.clock = std::make_unique<EspClock>();
     if (auto card = FatFsStorage::mount(config.sdCard, config.projectsRoot); card) {
         if (auto status = card.value()->createDirectories(config.projectsRoot); !status) {
