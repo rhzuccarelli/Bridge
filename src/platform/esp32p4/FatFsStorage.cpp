@@ -11,11 +11,14 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include "aw/core/Logger.hpp"
 #include "driver/sdmmc_host.h"
 #include "esp_heap_caps.h"
 #include "esp_vfs_fat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "sdmmc_cmd.h"
 
@@ -62,20 +65,22 @@ core::Error errnoError(std::string_view what) {
 /// `hal::FileHandle` over a FatFS file descriptor; see the header.
 class FatFsFile final : public hal::FileHandle {
 public:
-    FatFsFile(int fd, bool append) noexcept : fd_{fd}, append_{append} {}
+    /// `path` is kept for read-only files, to reopen them after a failed read.
+    FatFsFile(int fd, bool append, core::Path path) noexcept
+        : fd_{fd}, append_{append}, path_{std::move(path)} {}
     ~FatFsFile() override { ::close(fd_); }
 
     core::Result<std::size_t> read(std::span<std::byte> destination) override {
         Bounce& shared = bounce();
         if (destination.size() < kBounceFrom || shared.data == nullptr) {
-            return direct(::read(fd_, destination.data(), destination.size()), "read");
+            return direct(readRetrying(destination.data(), destination.size()), "read");
         }
         std::size_t done = 0;
         while (done < destination.size()) {
             const std::lock_guard lock{shared.mutex};
             const std::size_t pad = shared.padFor(position());
             const std::size_t wanted = std::min(destination.size() - done, kBounceBytes - shared.alignment);
-            const ssize_t got = ::read(fd_, shared.data + pad, wanted);
+            const ssize_t got = readRetrying(shared.data + pad, wanted);
             if (got < 0) return errnoError("read");
             std::memcpy(destination.data() + done, shared.data + pad, static_cast<std::size_t>(got));
             done += static_cast<std::size_t>(got);
@@ -134,6 +139,46 @@ public:
     }
 
 private:
+    /// Transfers the SD card fails now and then while USB and the CPU load
+    /// the P4's memory (a read times out with the data not yet drained).
+    /// FatFS returns what it read before the failure as a short read, then
+    /// refuses every further operation on that file, lseek included. So a
+    /// read-only file is reopened at the offset where the last read ended and
+    /// the read repeated.
+    static constexpr int kReadAttempts = 3;
+
+    ssize_t readRetrying(void* destination, std::size_t bytes) {
+        off_t at = ::lseek(fd_, 0, SEEK_CUR);
+        if (at < 0) at = readEnd_;
+        ssize_t got = ::read(fd_, destination, bytes);
+        for (int attempt = 1; got < 0 && errno == EIO && !path_.empty() && at >= 0 &&
+                              attempt < kReadAttempts;
+             ++attempt) {
+            core::log::warning(kModule, "read of " + path_.string() + " at " + std::to_string(at) +
+                                            " failed; reopening it, attempt " +
+                                            std::to_string(attempt + 1));
+            vTaskDelay(pdMS_TO_TICKS(10));
+            const int fd = ::open(path_.c_str(), O_RDONLY);
+            if (fd < 0) {
+                core::log::warning(kModule, std::string{"reopening failed: "} + std::strerror(errno));
+                errno = EIO;
+                continue;
+            }
+            ::close(fd_);
+            fd_ = fd;
+            if (::lseek(fd_, at, SEEK_SET) != at) {
+                errno = EIO;
+                break;
+            }
+            got = ::read(fd_, destination, bytes);
+            if (got < 0) {
+                core::log::warning(kModule, std::string{"read failed again: "} + std::strerror(errno));
+            }
+        }
+        readEnd_ = got >= 0 && at >= 0 ? at + got : -1;
+        return got;
+    }
+
     static core::Result<std::size_t> direct(ssize_t result, std::string_view what) {
         if (result < 0) return errnoError(what);
         return static_cast<std::size_t>(result);
@@ -149,6 +194,8 @@ private:
 
     int fd_;
     bool append_;
+    core::Path path_;
+    off_t readEnd_{-1};  ///< Where the last read ended, -1 if unknown.
 };
 
 int openFlags(hal::OpenMode mode) {
@@ -283,7 +330,8 @@ core::Result<std::unique_ptr<hal::FileHandle>> FatFsStorage::open(const core::Pa
     }
     if (fd < 0) return fromErrno(errno, path);
     return std::unique_ptr<hal::FileHandle>{
-        std::make_unique<FatFsFile>(fd, mode == hal::OpenMode::Append)};
+        std::make_unique<FatFsFile>(fd, mode == hal::OpenMode::Append,
+                                    mode == hal::OpenMode::Read ? path : core::Path{})};
 }
 
 bool FatFsStorage::exists(const core::Path& path) const {

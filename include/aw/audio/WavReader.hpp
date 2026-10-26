@@ -54,7 +54,11 @@ public:
     /// `read()` from them, so small reads cost one large storage read. 0, the
     /// default, reads exactly what each `read()` asks for. For sequential
     /// reading: a `seek()` drops what was read ahead.
-    void setReadAhead(std::size_t bytes);
+    ///
+    /// With `background`, a thread of the reader's own reads the next chunk
+    /// while the current one is used, so storage transfers overlap the
+    /// caller's work. The reader is then still used from one thread only.
+    void setReadAhead(std::size_t bytes, bool background = false);
 
     /// Positions the next read.  Clamped to [0, frameCount].
     [[nodiscard]] core::Status seek(core::FrameIndex frame);

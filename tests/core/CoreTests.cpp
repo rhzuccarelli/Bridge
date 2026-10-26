@@ -1,10 +1,12 @@
 #include "aw/core/AudioFormat.hpp"
 #include "aw/core/Result.hpp"
 #include "aw/core/RingBuffer.hpp"
+#include "aw/core/Thread.hpp"
 #include "aw/core/Types.hpp"
 #include "framework/Test.hpp"
 
 #include <thread>
+#include <vector>
 
 using namespace aw;
 
@@ -131,4 +133,29 @@ AW_TEST(Types, FrameRangeIsHalfOpen) {
     AW_CHECK(range.contains(149));
     AW_CHECK(!range.contains(150));
     AW_CHECK(!range.isEmpty());
+}
+
+namespace {
+std::vector<core::ThreadRole> placedRoles;  // Written only on the test's thread.
+void recordPlacement(core::ThreadRole role) { placedRoles.push_back(role); }
+}  // namespace
+
+AW_TEST(Thread, PlacesComputeThreadsThenRestoresTheDefault) {
+    placedRoles.clear();
+    core::threads::installPlacer(&recordPlacement);
+    bool ran = false;
+    core::threads::start(core::ThreadRole::Compute, [&ran] { ran = true; }).join();
+    core::threads::start(core::ThreadRole::General, [] {}).join();
+    core::threads::installPlacer(nullptr);
+
+    AW_CHECK(ran);
+    AW_REQUIRE(placedRoles.size() == 2);  // General threads are not placed.
+    AW_CHECK(placedRoles[0] == core::ThreadRole::Compute);
+    AW_CHECK(placedRoles[1] == core::ThreadRole::General);
+}
+
+AW_TEST(Thread, StartsPlainThreadsWithoutAPlacer) {
+    bool ran = false;
+    core::threads::start(core::ThreadRole::Compute, [&ran] { ran = true; }).join();
+    AW_CHECK(ran);
 }

@@ -833,9 +833,11 @@ AW_TEST(SampleConverter, PackedInt24FastPathsMatchTheSingleSampleHelpers) {
     AW_CHECK(packedSame);
 }
 
-AW_TEST(WavReader, ReadAheadReturnsTheSameFramesAcrossChunksAndSeeks) {
-    // 3 channels, 1000 frames; a 40-frame read-ahead with 7-frame reads
-    // crosses chunk edges, and a seek drops what was read ahead.
+namespace {
+
+/// 3 channels, 1000 frames; a 40-frame read-ahead with 7-frame reads
+/// crosses chunk edges, and a seek drops what was read ahead.
+void checkReadAhead(bool background) {
     awtest::MemoryStorage storage;
     const core::AudioFormat format{48000, 3, core::SampleFormat::Int24};
     audio::WavWriter writer;
@@ -852,7 +854,7 @@ AW_TEST(WavReader, ReadAheadReturnsTheSameFramesAcrossChunksAndSeeks) {
     audio::WavReader ahead;
     AW_REQUIRE(plain.open(storage, "/ramp.wav"));
     AW_REQUIRE(ahead.open(storage, "/ramp.wav"));
-    ahead.setReadAhead(40 * format.bytesPerFrame() + 5);  // Not a whole number of frames.
+    ahead.setReadAhead(40 * format.bytesPerFrame() + 5, background);  // Not whole frames.
 
     audio::AudioBuffer expected{3, 7};
     audio::AudioBuffer actual{3, 7};
@@ -878,3 +880,9 @@ AW_TEST(WavReader, ReadAheadReturnsTheSameFramesAcrossChunksAndSeeks) {
     AW_CHECK_EQ(compare(), core::FrameCount{3});
     AW_CHECK_EQ(compare(), core::FrameCount{0});
 }
+
+}  // namespace
+
+AW_TEST(WavReader, ReadAheadReturnsTheSameFramesAcrossChunksAndSeeks) { checkReadAhead(false); }
+
+AW_TEST(WavReader, BackgroundReadAheadReturnsTheSameFrames) { checkReadAhead(true); }

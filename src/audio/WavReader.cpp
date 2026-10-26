@@ -5,8 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -254,16 +257,149 @@ core::Result<WavMetadata> parseHeader(hal::FileHandle& file) {
 /// Reader state.  Lives behind a pimpl so the chunk table, the read cursor and
 /// the conversion scratch buffer do not appear in a header every module includes.
 struct WavReader::Impl {
+    /// Background read-ahead: a thread that reads the next chunk while the
+    /// current one is used. It alone touches `file` while it exists.
+    struct Prefetch {
+        enum class State : std::uint8_t { Idle, Pending, Ready };
+        std::mutex mutex;
+        std::condition_variable changed;
+        State state{State::Idle};
+        bool stopping{false};
+        core::FrameIndex start{0};
+        core::FrameCount wanted{0};
+        core::FrameCount frames{0};
+        core::Status status = core::success();
+        std::vector<std::byte> buffer;
+        std::thread thread;
+    };
+
+    ~Impl() { stopPrefetch(); }
+
+    void stopPrefetch() {
+        if (!prefetch) {
+            return;
+        }
+        {
+            std::lock_guard lock{prefetch->mutex};
+            prefetch->stopping = true;
+        }
+        prefetch->changed.notify_all();
+        prefetch->thread.join();
+        prefetch.reset();
+    }
+
+    /// Reads up to `wanted` frames from `start` into `buffer`.
+    core::Result<core::FrameCount> fill(std::vector<std::byte>& buffer, core::FrameIndex start,
+                                        core::FrameCount wanted) {
+        const std::size_t bytesPerFrame = metadata.format.bytesPerFrame();
+        if (filePosition != start) {
+            auto seek = file->seek(static_cast<std::int64_t>(
+                                       metadata.dataOffset +
+                                       static_cast<std::uint64_t>(start) * bytesPerFrame),
+                                   hal::SeekOrigin::Begin);
+            if (!seek) {
+                filePosition = -1;
+                return seek.error();
+            }
+            filePosition = start;
+        }
+        const std::size_t bytesWanted = static_cast<std::size_t>(wanted) * bytesPerFrame;
+        std::size_t bytesRead = 0;
+        while (bytesRead < bytesWanted) {
+            auto read =
+                file->read(std::span<std::byte>{buffer}.subspan(bytesRead, bytesWanted - bytesRead));
+            if (!read) {
+                filePosition = -1;
+                return read.error();
+            }
+            if (read.value() == 0) {
+                break;
+            }
+            bytesRead += read.value();
+        }
+        if (bytesRead % bytesPerFrame != 0) {
+            filePosition = -1;
+            return core::makeError(core::ErrorCode::Corrupt, "partial frame at end of WAV read");
+        }
+        const auto frames = static_cast<core::FrameCount>(bytesRead / bytesPerFrame);
+        filePosition += frames;
+        return frames;
+    }
+
+    void runPrefetch() {
+        Prefetch& shared = *prefetch;
+        for (;;) {
+            std::unique_lock lock{shared.mutex};
+            shared.changed.wait(lock, [&] {
+                return shared.stopping || shared.state == Prefetch::State::Pending;
+            });
+            if (shared.stopping) {
+                return;
+            }
+            const core::FrameIndex start = shared.start;
+            const core::FrameCount wanted = shared.wanted;
+            lock.unlock();
+            auto got = fill(shared.buffer, start, wanted);
+            lock.lock();
+            shared.frames = got ? got.value() : 0;
+            shared.status = got ? core::success() : core::Status{got.error()};
+            shared.state = Prefetch::State::Ready;
+            shared.changed.notify_all();
+        }
+    }
+
+    /// Asks the prefetch thread for the chunk at `start`. Holds `lock`.
+    void request(std::unique_lock<std::mutex>& lock, core::FrameIndex start) {
+        prefetch->changed.wait(lock, [&] { return prefetch->state != Prefetch::State::Pending; });
+        prefetch->state = Prefetch::State::Pending;
+        prefetch->start = start;
+        prefetch->wanted = std::min(aheadCapacity, metadata.frameCount - start);
+        prefetch->changed.notify_all();
+    }
+
+    /// Makes `ahead` hold the chunk that starts at `position`.
+    core::Status loadChunk() {
+        aheadStart = position;
+        aheadFrames = 0;
+        if (!prefetch) {
+            auto got = fill(ahead, position, std::min(aheadCapacity, metadata.frameCount - position));
+            if (!got) {
+                return got.error();
+            }
+            aheadFrames = got.value();
+            return core::success();
+        }
+        std::unique_lock lock{prefetch->mutex};
+        if (prefetch->state == Prefetch::State::Idle || prefetch->start != position) {
+            request(lock, position);
+        }
+        prefetch->changed.wait(lock, [&] { return prefetch->state == Prefetch::State::Ready; });
+        prefetch->state = Prefetch::State::Idle;
+        if (!prefetch->status) {
+            return prefetch->status;
+        }
+        std::swap(ahead, prefetch->buffer);
+        aheadFrames = prefetch->frames;
+        // Start on the next chunk while this one is used.
+        if (aheadFrames > 0 && position + aheadFrames < metadata.frameCount) {
+            request(lock, position + aheadFrames);
+        }
+        return core::success();
+    }
+
     std::unique_ptr<hal::FileHandle> file;
     WavMetadata metadata;
     core::FrameIndex position{0};
     std::vector<std::byte> scratch;
-    // Read-ahead: `ahead` holds frames [aheadStart, aheadStart + aheadFrames).
-    // Whenever none of it is left, the file is at `position`.
+    // Read-ahead: `ahead` holds frames [aheadStart, aheadStart + aheadFrames),
+    // and the next file read starts at `filePosition` (-1: unknown). Without
+    // read-ahead the file is always at `position`.
     core::FrameCount aheadCapacity{0};
     std::vector<std::byte> ahead;
     core::FrameIndex aheadStart{0};
     core::FrameCount aheadFrames{0};
+    core::FrameIndex filePosition{0};
+    std::unique_ptr<Prefetch> prefetch;
 };
 
 WavReader::WavReader() = default;
@@ -306,19 +442,28 @@ const WavMetadata& WavReader::metadata() const noexcept {
     return impl_ ? impl_->metadata : kEmpty;
 }
 
-void WavReader::setReadAhead(std::size_t bytes) {
+void WavReader::setReadAhead(std::size_t bytes, bool background) {
     if (!isOpen()) {
         return;
+    }
+    impl_->stopPrefetch();
+    if (impl_->aheadCapacity == 0) {
+        impl_->filePosition = impl_->position;  // Plain reads leave the file there.
     }
     const std::size_t bytesPerFrame = impl_->metadata.format.bytesPerFrame();
     impl_->aheadCapacity =
         bytesPerFrame == 0 ? 0 : static_cast<core::FrameCount>(bytes / bytesPerFrame);
     impl_->ahead.resize(static_cast<std::size_t>(impl_->aheadCapacity) * bytesPerFrame);
     impl_->ahead.shrink_to_fit();
-    if (impl_->aheadFrames > 0) {
-        // Put the file back where the caller is.
-        impl_->aheadFrames = 0;
-        (void)seek(impl_->position);
+    impl_->aheadFrames = 0;
+    if (impl_->aheadCapacity == 0) {
+        (void)seek(impl_->position);  // Back to the plain reads' rule.
+        return;
+    }
+    if (background) {
+        impl_->prefetch = std::make_unique<Impl::Prefetch>();
+        impl_->prefetch->buffer.resize(impl_->ahead.size());
+        impl_->prefetch->thread = std::thread{[impl = impl_.get()] { impl->runPrefetch(); }};
     }
 }
 
@@ -391,27 +536,8 @@ core::Result<core::FrameCount> WavReader::readAhead(AudioBuffer& destination,
     while (done < targetFrames) {
         if (impl_->position < impl_->aheadStart ||
             impl_->position >= impl_->aheadStart + impl_->aheadFrames) {
-            const core::FrameCount wanted = std::min(
-                impl_->aheadCapacity, impl_->metadata.frameCount - impl_->position);
-            const std::size_t bytesWanted = static_cast<std::size_t>(wanted) * bytesPerFrame;
-            std::size_t bytesRead = 0;
-            while (bytesRead < bytesWanted) {
-                auto read = impl_->file->read(
-                    std::span<std::byte>{impl_->ahead}.subspan(bytesRead, bytesWanted - bytesRead));
-                if (!read) {
-                    impl_->aheadFrames = 0;
-                    return read.error();
-                }
-                if (read.value() == 0) {
-                    break;
-                }
-                bytesRead += read.value();
-            }
-            impl_->aheadStart = impl_->position;
-            impl_->aheadFrames = static_cast<core::FrameCount>(bytesRead / bytesPerFrame);
-            if (bytesRead % bytesPerFrame != 0) {
-                impl_->aheadFrames = 0;
-                return core::makeError(core::ErrorCode::Corrupt, "partial frame at end of WAV read");
+            if (auto status = impl_->loadChunk(); !status) {
+                return status.error();
             }
             if (impl_->aheadFrames == 0) {
                 break;
@@ -443,6 +569,10 @@ core::Status WavReader::seek(core::FrameIndex frame) {
     impl_->aheadFrames = 0;
 
     const core::FrameIndex clamped = std::clamp<core::FrameIndex>(frame, 0, impl_->metadata.frameCount);
+    if (impl_->aheadCapacity > 0) {
+        impl_->position = clamped;  // The next chunk read seeks the file.
+        return core::success();
+    }
     const std::uint64_t byteOffset =
         impl_->metadata.dataOffset +
         static_cast<std::uint64_t>(clamped) * impl_->metadata.format.bytesPerFrame();

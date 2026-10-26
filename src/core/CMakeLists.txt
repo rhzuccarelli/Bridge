@@ -7,7 +7,8 @@
 add_library(aw_core STATIC
     Controls.cpp
     Error.cpp
-    Logger.cpp)
+    Logger.cpp
+    Thread.cpp)
 
 add_library(aw::core ALIAS aw_core)
 
