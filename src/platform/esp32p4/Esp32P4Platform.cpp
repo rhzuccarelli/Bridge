@@ -127,6 +127,7 @@ core::Result<hal::Platform> createPlatform(const Esp32P4Config& config) {
     platform.usb = std::move(usb.usb);
     platform.mtp = std::move(usb.mtp);
     platform.deviceMode = std::move(usb.deviceMode);
+    platform.usbControl = std::move(usb.usbControl);
 
     if (!platform.isComplete()) {
         return core::makeError(core::ErrorCode::Unknown, "esp32p4 platform incomplete");

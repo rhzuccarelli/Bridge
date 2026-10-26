@@ -24,6 +24,7 @@ enum class ScreenId : std::uint8_t {
     CopyChannel,
     Decks,
     Settings,
+    Duet,
 };
 
 [[nodiscard]] std::string_view toString(ScreenId id) noexcept;

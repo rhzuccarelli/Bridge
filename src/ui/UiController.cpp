@@ -5,6 +5,7 @@
 #include "aw/ui/screens/ExportScreen.hpp"
 #include "aw/ui/screens/CopyChannelScreen.hpp"
 #include "aw/ui/screens/DeckScreen.hpp"
+#include "aw/ui/screens/DuetScreen.hpp"
 #include "aw/ui/screens/HomeScreen.hpp"
 #include "aw/ui/screens/ImportScreen.hpp"
 #include "aw/ui/screens/PlaybackScreen.hpp"
@@ -19,7 +20,9 @@ namespace {
 
 class TransferPlaceholder final : public aw::ui::Screen {
 public:
-    TransferPlaceholder(aw::ui::ScreenId id, std::string_view title) : id_{id}, title_{title} {}
+    TransferPlaceholder(aw::ui::ScreenId id, std::string_view title,
+                        std::string_view message = "MTP UNAVAILABLE")
+        : id_{id}, title_{title}, message_{message} {}
     aw::ui::ScreenId id() const noexcept override { return id_; }
     std::string_view title() const noexcept override { return title_; }
     void onEnter() override { dirty_ = true; }
@@ -31,13 +34,14 @@ public:
         painter.clear(aw::display::palette::kBackground);
         painter.fillRect({0, 0, 128, 10}, aw::display::palette::kSurface);
         painter.drawText(2, 1, title_, aw::display::smallFont(), aw::display::palette::kText);
-        painter.drawTextIn({0, 20, 128, 10}, "MTP UNAVAILABLE", aw::display::smallFont(),
+        painter.drawTextIn({0, 20, 128, 10}, message_, aw::display::smallFont(),
                            aw::display::palette::kTextDim, aw::display::TextAlign::Center);
         dirty_ = false;
     }
 private:
     aw::ui::ScreenId id_;
     std::string_view title_;
+    std::string_view message_;
     bool dirty_{true};
 };
 
@@ -56,7 +60,8 @@ UiController::UiController(display::Framebuffer& framebuffer,
                            project::ExportService* exporter,
                            TaskRunner* tasks,
                            events::EventQueue* workerQueue,
-                           hal::DeviceModeInterface* deviceMode)
+                           hal::DeviceModeInterface* deviceMode,
+                           devices::ApogeeDuet* duet)
     : framebuffer_{framebuffer},
       flusher_{flusher},
       bus_{bus},
@@ -69,6 +74,7 @@ UiController::UiController(display::Framebuffer& framebuffer,
       tasks_{tasks},
       workerQueue_{workerQueue},
       deviceMode_{deviceMode},
+      duet_{duet},
       painter_{framebuffer} {}
 
 UiController::~UiController() {
@@ -94,6 +100,12 @@ core::Status UiController::initialise() {
     } else {
         navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Import, "IMPORT"));
         navigator_.registerScreen(std::make_unique<TransferPlaceholder>(ScreenId::Export, "EXPORT"));
+    }
+    if (duet_ && tasks_ && workerQueue_) {
+        navigator_.registerScreen(std::make_unique<DuetScreen>(*duet_, *tasks_, *workerQueue_));
+    } else {
+        navigator_.registerScreen(
+            std::make_unique<TransferPlaceholder>(ScreenId::Duet, "DUET", "NO USB CONTROL"));
     }
 
     navigator_.reset(ScreenId::Home);

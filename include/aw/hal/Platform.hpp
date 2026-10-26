@@ -12,6 +12,7 @@
 #include "aw/hal/MTPInterface.hpp"
 #include "aw/hal/StorageInterface.hpp"
 #include "aw/hal/USBInterface.hpp"
+#include "aw/hal/UsbControlInterface.hpp"
 
 namespace aw::hal {
 
@@ -36,6 +37,7 @@ struct Platform {
     std::unique_ptr<USBInterface> usb;
     std::unique_ptr<MTPInterface> mtp;                ///< Optional.
     std::unique_ptr<DeviceModeInterface> deviceMode;  ///< Optional TP-7 mode control.
+    std::unique_ptr<UsbControlInterface> usbControl;  ///< Optional, e.g. Apogee Duet settings.
 
     [[nodiscard]] bool isComplete() const noexcept {
         return clock && storage && display && buttons && encoder && audioOutput && usb;

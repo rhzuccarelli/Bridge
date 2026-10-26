@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "aw/audio/AudioEngine.hpp"
+#include "aw/devices/ApogeeDuet.hpp"
 #include "aw/display/DisplayFlusher.hpp"
 #include "aw/display/Framebuffer.hpp"
 #include "aw/display/Painter.hpp"
@@ -42,7 +43,8 @@ public:
                  project::ExportService* exporter = nullptr,
                  TaskRunner* tasks = nullptr,
                  events::EventQueue* workerQueue = nullptr,
-                 hal::DeviceModeInterface* deviceMode = nullptr);
+                 hal::DeviceModeInterface* deviceMode = nullptr,
+                 devices::ApogeeDuet* duet = nullptr);
     ~UiController();
 
     UiController(const UiController&) = delete;
@@ -77,6 +79,7 @@ private:
     TaskRunner* tasks_;
     events::EventQueue* workerQueue_;
     hal::DeviceModeInterface* deviceMode_;
+    devices::ApogeeDuet* duet_;
 
     Navigator navigator_;
     display::Painter painter_;

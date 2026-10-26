@@ -91,8 +91,9 @@ core::Status Application::initialise() {
             *platform_.storage, *platform_.mtp, *projects_, workerQueue_);
         exportService_ = std::make_unique<project::ExportService>(
             *platform_.storage, *platform_.mtp, *projects_, workerQueue_);
-        taskRunner_ = std::make_unique<ThreadTaskRunner>();
     }
+    if (platform_.usbControl) duet_ = std::make_unique<devices::ApogeeDuet>(*platform_.usbControl);
+    if (platform_.mtp || duet_) taskRunner_ = std::make_unique<ThreadTaskRunner>();
 
     // --- Display -------------------------------------------------------------
     if (auto status = platform_.display->open(); !status) {
@@ -105,7 +106,7 @@ core::Status Application::initialise() {
     uiController_ = std::make_unique<ui::UiController>(
         *framebuffer_, *flusher_, bus_, *projects_, *engine_, mtpManager_.get(),
         mtpBrowser_.get(), importService_.get(), exportService_.get(), taskRunner_.get(),
-        &workerQueue_, platform_.deviceMode.get());
+        &workerQueue_, platform_.deviceMode.get(), duet_.get());
     if (auto status = uiController_->initialise(); !status) {
         return status;
     }

@@ -13,6 +13,7 @@ std::string_view toString(ScreenId id) noexcept {
         case ScreenId::CopyChannel: return "CopyChannel";
         case ScreenId::Decks: return "Decks";
         case ScreenId::Settings: return "Settings";
+        case ScreenId::Duet: return "Duet";
     }
     return "?";
 }
